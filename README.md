@@ -11,33 +11,60 @@ pip install quantecarlo
 ```
 
 ```python
+import warnings
+from concurrent.futures import ThreadPoolExecutor
+
 import optuna
+from optuna.trial import TrialState
+
 from quantecarlo import DimSpec, qEISampler
 
-# Define what you're optimizing — here, a simple 2-D quadratic.
-# In practice this is your training run, simulation, or experiment.
-def objective(trial):
-    x = trial.suggest_float("x", -5.0, 5.0)
-    y = trial.suggest_float("y", -5.0, 5.0)
-    return (x - 1.3) ** 2 + (y + 0.7) ** 2   # minimum at (1.3, -0.7)
-
-# The DimSpec names and bounds must match the suggest_* calls above.
+# The DimSpec names and bounds must match the suggest_* calls in the objective.
 search_space = [
     DimSpec(name="x", type="float", low=-5.0, high=5.0),
     DimSpec(name="y", type="float", low=-5.0, high=5.0),
 ]
 
-sampler = qEISampler(
-    search_space=search_space,
-    q=4,
-)
+Q = 4               # batch size; also the number of parallel workers
+N_STARTUP = 8       # random warm-up trials before the GP kicks in
+N_ITERATIONS = 10   # total trials = N_ITERATIONS × Q
 
+def objective(trial: optuna.Trial) -> float:
+    x = trial.suggest_float("x", -5.0, 5.0)
+    y = trial.suggest_float("y", -5.0, 5.0)
+    return (x - 1.3) ** 2 + (y + 0.7) ** 2   # minimum at (1.3, -0.7)
+
+sampler = qEISampler(search_space=search_space, q=Q, n_startup_trials=N_STARTUP)
 study = optuna.create_study(direction="minimize", sampler=sampler)
-study.optimize(objective, n_trials=40, n_jobs=4)
+optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+with ThreadPoolExecutor(max_workers=Q) as executor:
+    for _ in range(N_ITERATIONS):
+        # Ask Q times first — the first ask fires the API and fills the cache,
+        # the remaining Q-1 asks pop from the cache without a second API call.
+        trials = [study.ask() for _ in range(Q)]
+
+        # Evaluate the batch in parallel, then tell results back.
+        futures = {executor.submit(objective, t): t for t in trials}
+        for future, trial in futures.items():
+            try:
+                study.tell(trial, future.result())
+            except Exception as exc:
+                warnings.warn(str(exc))
+                study.tell(trial, state=TrialState.FAIL)
+
 print(study.best_params)
 ```
 
-See `demo.py` for a full ask-tell example using an MLP on the breast-cancer dataset, with explicit batching and a per-iteration progress table.
+### Why ask-tell instead of `study.optimize`?
+
+The ask-tell loop is the pattern Optuna uses internally, exposed here explicitly so the sampler can coordinate across parallel workers. With `study.optimize(n_jobs=q)`, each worker thread calls `sample_relative` independently — the sampler has no visibility into what the other `q-1` workers are about to evaluate. The result is that all `q` suggestions are drawn from the same posterior snapshot, and candidates often cluster.
+
+The ask-tell pattern fixes this: all `q` asks happen before any evaluation begins. The first ask triggers one API call that selects `q` jointly diverse candidates; asks 2 through `q` pop from the local cache. When the evaluations finish and `tell` reports the results, the next round starts with a fully updated posterior. This is what makes the joint q-EI criterion meaningful in practice.
+
+Additional examples are in the [`demos/`](demos/) directory:
+- `demos/demo.py` — NAS on the breast-cancer dataset using an MLP, with explicit batching and a per-iteration progress table.
+- `demos/demo7.py` — comparison of qEISampler (ask-tell) against Optuna's default TPE on a pool-based image ad search task. Requires external data files (not included).
 
 ---
 
