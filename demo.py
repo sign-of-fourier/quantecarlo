@@ -27,8 +27,6 @@ from quantecarlo import DimSpec, qEISampler
 # Configuration — fill in your deployed endpoint URL
 # ---------------------------------------------------------------------------
 
-MODAL_API_URL = "https://<your-workspace>--bo-gp-service-gp-suggest.modal.run"
-
 Q = 4            # batch size; also controls parallel workers in executor
 N_STARTUP = 8    # random trials before GP kicks in
 N_ITERATIONS = 15  # total trials = N_ITERATIONS * Q
@@ -126,7 +124,6 @@ def summarize_study_by_iteration(
 
 def main() -> None:
     sampler = qEISampler(
-        api_url=MODAL_API_URL,
         search_space=SEARCH_SPACE,
         n_startup_trials=N_STARTUP,
         q=Q,

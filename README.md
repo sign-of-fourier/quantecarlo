@@ -28,7 +28,6 @@ search_space = [
 ]
 
 sampler = qEISampler(
-    api_url="https://<your-endpoint>/gp_suggest",
     search_space=search_space,
     q=4,
 )
@@ -77,8 +76,8 @@ Categorical dimensions are not yet supported.
 
 | Parameter         | Default        | Description |
 |-------------------|----------------|-------------|
-| `api_url`         | —              | URL of the hosted GP endpoint. |
 | `search_space`    | —              | List of `DimSpec`, one per hyperparameter. |
+| `api_url`         | *(hosted)*     | GP endpoint URL. Override only if self-hosting. |
 | `n_startup_trials`| `8`            | Number of random trials before the GP is used. Too few observations make GP fitting unreliable. |
 | `q`               | `4`            | Batch size. Set `n_jobs=q` in `study.optimize` to evaluate the batch in parallel. |
 | `n_candidates`    | `512`          | Random candidate batches scored per API call. Larger = better coverage; diminishing returns above ~1024 for most spaces. |
