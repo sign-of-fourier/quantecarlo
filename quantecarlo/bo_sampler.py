@@ -1,4 +1,4 @@
-# quantecarlo/qEI.py
+# quantecarlo/bo_sampler.py
 from __future__ import annotations
 
 import json
@@ -31,7 +31,7 @@ class DimSpec:
     step: float | None = None  # grid step for int dims (default 1)
 
 
-class ModalBOSampler(BaseSampler):
+class qEISampler(BaseSampler):
     """Optuna sampler that outsources GP fitting and q-EI scoring to a remote endpoint.
 
     Fills a local cache with q suggestions on the first ask after the cache empties,
@@ -152,7 +152,7 @@ class ModalBOSampler(BaseSampler):
                         print(f"[debug] max ei : {max(valid):.6f}  winning batch ei_score: {data.get('ei_scores')}")
             except Exception as exc:
                 warnings.warn(
-                    f"ModalBOSampler: API call failed ({exc}), falling back to random."
+                    f"qEISampler: API call failed ({exc}), falling back to random."
                 )
                 return {}
 

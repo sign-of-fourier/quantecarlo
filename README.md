@@ -11,35 +11,40 @@ pip install quantecarlo
 ```
 
 ```python
-from quantecarlo import DimSpec, ModalBOSampler
 import optuna
+from quantecarlo import DimSpec, qEISampler
 
-SEARCH_SPACE = [
-    DimSpec(name="lr",      type="float", low=1e-4, high=1e-1, log=True),
-    DimSpec(name="depth",   type="int",   low=1,    high=20),
-    DimSpec(name="dropout", type="float", low=0.0,  high=0.5),
+# Define what you're optimizing — here, a simple 2-D quadratic.
+# In practice this is your training run, simulation, or experiment.
+def objective(trial):
+    x = trial.suggest_float("x", -5.0, 5.0)
+    y = trial.suggest_float("y", -5.0, 5.0)
+    return (x - 1.3) ** 2 + (y + 0.7) ** 2   # minimum at (1.3, -0.7)
+
+# The DimSpec names and bounds must match the suggest_* calls above.
+search_space = [
+    DimSpec(name="x", type="float", low=-5.0, high=5.0),
+    DimSpec(name="y", type="float", low=-5.0, high=5.0),
 ]
 
-sampler = ModalBOSampler(
+sampler = qEISampler(
     api_url="https://<your-endpoint>/gp_suggest",
-    search_space=SEARCH_SPACE,
-    n_startup_trials=8,
+    search_space=search_space,
     q=4,
 )
 
 study = optuna.create_study(direction="minimize", sampler=sampler)
-study.optimize(your_objective, n_trials=60, n_jobs=4)
+study.optimize(objective, n_trials=40, n_jobs=4)
+print(study.best_params)
 ```
 
-The `suggest_*` calls inside your objective must use the same names, bounds, and `log` flags as the `DimSpec` list.
-
-See `demo.py` for a complete ask-tell example against a breast-cancer MLP objective.
+See `demo.py` for a full ask-tell example using an MLP on the breast-cancer dataset, with explicit batching and a per-iteration progress table.
 
 ---
 
 ## What's happening under the hood (you don't need to touch any of this)
 
-Each time the local suggestion cache runs dry, `ModalBOSampler` POSTs your observed `(X, y)` pairs to a remote GP service. That service:
+Each time the local suggestion cache runs dry, `qEISampler` POSTs your observed `(X, y)` pairs to a remote GP service. That service:
 
 1. **Normalises** each parameter to [0, 1] (log-scale for `log=True` dims).
 2. **Rank-transforms** `y` to standard-normal via the Probability Integral Transform — so the GP always sees well-behaved Gaussian targets regardless of the shape of your objective's distribution.
@@ -68,7 +73,7 @@ Describes one dimension of your search space.
 
 Categorical dimensions are not yet supported.
 
-### `ModalBOSampler`
+### `qEISampler`
 
 | Parameter         | Default        | Description |
 |-------------------|----------------|-------------|

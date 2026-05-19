@@ -1,3 +1,3 @@
-from quantecarlo.qEI import DimSpec, ModalBOSampler
+from quantecarlo.bo_sampler import DimSpec, qEISampler
 
-__all__ = ["DimSpec", "ModalBOSampler"]
+__all__ = ["DimSpec", "qEISampler"]

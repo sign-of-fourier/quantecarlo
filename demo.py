@@ -1,4 +1,4 @@
-# demo.py — ask-tell tutorial for ModalBOSampler
+# demo.py — ask-tell tutorial for qEISampler
 #
 # Usage:
 #   1. Deploy the GP service (see README for the backend repo / hosted endpoint).
@@ -21,7 +21,7 @@ from sklearn.model_selection import cross_val_score, train_test_split
 from sklearn.neural_network import MLPClassifier
 from optuna.trial import TrialState
 
-from quantecarlo import DimSpec, ModalBOSampler
+from quantecarlo import DimSpec, qEISampler
 
 # ---------------------------------------------------------------------------
 # Configuration — fill in your deployed endpoint URL
@@ -125,7 +125,7 @@ def summarize_study_by_iteration(
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    sampler = ModalBOSampler(
+    sampler = qEISampler(
         api_url=MODAL_API_URL,
         search_space=SEARCH_SPACE,
         n_startup_trials=N_STARTUP,
