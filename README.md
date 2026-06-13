@@ -70,7 +70,9 @@ Additional examples are in the [`demos/`](demos/) directory:
 
 ## What's happening under the hood (you don't need to touch any of this)
 
-Each time the local suggestion cache runs dry, `qEISampler` POSTs your observed `(X, y)` pairs to a remote GP service. That service:
+The GP fitting and q-EI scoring run on a GPU cluster hosted remotely (currently Modal). Only the inputs to your objective function — hyperparameter values and their corresponding scores — are sent to the service. Your training data, model weights, or any other data used inside your objective never leave your machine.
+
+Each time the local suggestion cache runs dry, `qEISampler` POSTs your observed `(X, y)` pairs to that remote GP service. That service:
 
 1. **Normalises** each parameter to [0, 1] (log-scale for `log=True` dims).
 2. **Rank-transforms** `y` to standard-normal via the Probability Integral Transform — so the GP always sees well-behaved Gaussian targets regardless of the shape of your objective's distribution.
@@ -114,6 +116,66 @@ Categorical dimensions are not yet supported.
 | `mode`            | `"production"` | `"debug"` returns the full GP posterior surface in the API response — useful for diagnostics. |
 | `seed`            | `None`         | Random seed for the fallback random sampler. |
 | `timeout`         | `120.0`        | HTTP timeout in seconds for the API call. |
+
+---
+
+## Multi-group optimisation (`MultiGroupqEISampler`)
+
+Use `MultiGroupqEISampler` when you have **N groups with different search
+space sizes** and want to optimise over them jointly.  The canonical case
+is comparing candidates across platforms whose embedding dimensions differ
+(e.g. 64-dim Meta ad embeddings vs 32-dim Google RSA embeddings).
+
+```python
+from quantecarlo import DimSpec, MultiGroupqEISampler
+
+# Each group's DimSpec list can have a different length.
+# The sampler makes one API call per group automatically.
+sampler = MultiGroupqEISampler(
+    groups=[
+        ("meta",   [DimSpec(f"x{i}", "float", lo, hi) for i in range(64)]),
+        ("google", [DimSpec(f"x{i}", "float", lo, hi) for i in range(32)]),
+        # Add more groups here — each gets its own API call.
+    ],
+    api_url="https://...",
+    n_startup_trials=8,
+    q=4,
+)
+
+# One Optuna study per group; study_name must match the group name above.
+study_meta   = optuna.create_study(study_name="meta",   sampler=sampler)
+study_google = optuna.create_study(study_name="google", sampler=sampler)
+sampler.register_study("meta",   study_meta)
+sampler.register_study("google", study_google)
+```
+
+**How it differs from running N independent `qEISampler` instances:**
+
+An independent sampler for each group would rank-normalise each group's
+`y` values in isolation.  A Meta trial with score 5.1 and a Google trial
+with score 4.4 might produce identical GP posterior means — not because
+they are equivalent, but because the normalisation was anchored to
+different distributions.
+
+`MultiGroupqEISampler` fits a single ECDF on the **combined** pool of
+all groups' y values before sending anything to the API.  Every group's
+targets are on the same scale, so the returned EI values are directly
+comparable.  This matters when you want to surface "the globally best
+next thing to try" regardless of which group it comes from.
+
+**Ask-tell pattern for multiple groups:**
+
+```python
+# Ask from ALL studies before evaluating any of them.
+# The first ask on any study triggers a cross-group BO run (one API call
+# per group) and fills every group's cache simultaneously.
+for _ in range(n_iterations):
+    trials_meta   = [study_meta.ask()   for _ in range(q)]
+    trials_google = [study_google.ask() for _ in range(q)]
+    # ... evaluate all in parallel ...
+    for t, v in zip(trials_meta,   meta_values):   study_meta.tell(t, v)
+    for t, v in zip(trials_google, google_values): study_google.tell(t, v)
+```
 
 ---
 

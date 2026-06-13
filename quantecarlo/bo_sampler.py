@@ -45,7 +45,7 @@ class qEISampler(BaseSampler):
     def __init__(
         self,
         search_space: list[DimSpec],
-        api_url: str = "https://markshipman4273--bo-gp-service-gp-suggest.modal.run",
+        api_url: str = "https://info-29741--bo-gp-service-gp-suggest.modal.run",
         n_startup_trials: int = 8,
         q: int = 4,
         n_candidates: int = 512,
