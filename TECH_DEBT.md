@@ -139,6 +139,18 @@ from quantecarlo. PCA helpers, env-var config, and `modal_bo_enabled()` remain h
 - `optunahub-registry/example.py` already used `load_module` (no change needed).
 - `meta-ads-demo/requirements.txt` pin updated to `quantecarlo>=0.2.0`.
 
+### Stage 7 — Republish after BatchSampler migration ✅
+The BatchSampler/multi-output/fantasize_suggest work above (Stages 4–6) was committed
+(`3d73aa0`) and pushed to `main` while `pyproject.toml` still said `0.2.0` — but `0.2.0`
+was already published on PyPI from Stage 5, with the old `qEISampler` API. That left
+git `main` and the published `0.2.0` disagreeing under the same version string.
+- Bumped to `0.3.0` (`6c0430a`) — minor, not patch, since `qEISampler` removal breaks
+  existing callers.
+- Built and uploaded to PyPI: https://pypi.org/project/quantecarlo/0.3.0/
+- `meta-ads-demo/requirements.txt` pin (`quantecarlo>=0.2.0`) not bumped — resolves to
+  `0.3.0` fine as a floor, and meta-ads-demo never used `qEISampler`/`BatchSampler` so
+  the breaking change doesn't affect it.
+
 ---
 
 ## Manual testing checklist
