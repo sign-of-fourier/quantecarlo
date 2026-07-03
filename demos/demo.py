@@ -1,10 +1,10 @@
-# demo.py — ask-tell tutorial for qEISampler
+# demo.py — ask-tell tutorial for BatchSampler + modal_suggest
 #
 # Usage:
-#   1. Deploy the GP service (see README for the backend repo / hosted endpoint).
-#   2. Paste the endpoint URL into MODAL_API_URL below.
-#   3. pip install -e .   (from this directory, or pip install quantecarlo)
-#   4. python demo.py
+#   1. Deploy the GP service (see ~/projects/boaz/modal — modal deploy modal_gp_api.py)
+#   2. pip install -e .   (from repo root)
+#   3. pip install optunahub
+#   4. python demos/demo.py
 #
 # The ask-tell loop is explicit rather than study.optimize() so the batching
 # contract is visible: q sequential asks fill the cache once, then q parallel
@@ -12,8 +12,10 @@
 
 import warnings
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 import optuna
+import optunahub
 import pandas as pd
 from sklearn.datasets import load_breast_cancer
 from sklearn.exceptions import ConvergenceWarning
@@ -21,17 +23,18 @@ from sklearn.model_selection import cross_val_score, train_test_split
 from sklearn.neural_network import MLPClassifier
 from optuna.trial import TrialState
 
-from quantecarlo import DimSpec, qEISampler
+from quantecarlo import DimSpec, modal_suggest
 
 # ---------------------------------------------------------------------------
-# Configuration — fill in your deployed endpoint URL
+# Configuration
 # ---------------------------------------------------------------------------
 
-Q = 4            # batch size; also controls parallel workers in executor
-N_STARTUP = 8    # random trials before GP kicks in
-N_ITERATIONS = 15  # total trials = N_ITERATIONS * Q
+API_URL = "https://markshipman4273--bo-gp-service-gp-suggest.modal.run"
 
-# Search space — must match the suggest_* calls in objective().
+Q = 4
+N_STARTUP = 8
+N_ITERATIONS = 15
+
 SEARCH_SPACE = [
     DimSpec(name="lr",       type="float", low=1e-4, high=1e-1, log=True),
     DimSpec(name="n_hidden", type="int",   low=16,   high=256),
@@ -39,7 +42,7 @@ SEARCH_SPACE = [
 ]
 
 # ---------------------------------------------------------------------------
-# Dataset (loaded once; objective closes over these globals)
+# Dataset
 # ---------------------------------------------------------------------------
 
 _X, _y = load_breast_cancer(return_X_y=True)
@@ -67,38 +70,29 @@ def objective(trial: optuna.Trial) -> float:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", ConvergenceWarning)
         scores = cross_val_score(clf, _X_train, _y_train, cv=3, scoring="accuracy")
-
     return 1.0 - float(scores.mean())
 
 # ---------------------------------------------------------------------------
 # Ask-tell helpers
 # ---------------------------------------------------------------------------
 
-def run_batch(
-    study: optuna.Study,
-    executor: ThreadPoolExecutor,
-) -> None:
+def run_batch(study: optuna.Study, executor: ThreadPoolExecutor) -> None:
     # Ask: Q sequential calls.
     #   - Call 1 acquires the lock; if cache is empty, blocks on the API, fills cache.
     #   - Calls 2..Q acquire the lock, find the cache populated, pop immediately.
-    # During startup (< n_startup complete trials) all calls return {} and fall back
-    # to the random independent sampler — no API call is made.
+    # During startup (< n_startup complete trials) all calls fall back to random.
     trials = [study.ask() for _ in range(Q)]
 
-    # Evaluate in parallel, then tell.
     future_to_trial = {executor.submit(objective, t): t for t in trials}
     for future, trial in future_to_trial.items():
         try:
-            value = future.result()
-            study.tell(trial, value)
+            study.tell(trial, future.result())
         except Exception as exc:
             warnings.warn(f"Trial {trial.number} raised {exc!r}; marking FAIL.")
             study.tell(trial, state=TrialState.FAIL)
 
 
-def summarize_study_by_iteration(
-    study: optuna.Study, batch_size: int
-) -> pd.DataFrame:
+def summarize_study_by_iteration(study: optuna.Study, batch_size: int) -> pd.DataFrame:
     completed = sorted(
         [t for t in study.trials if t.state == TrialState.COMPLETE],
         key=lambda t: t.number,
@@ -107,15 +101,13 @@ def summarize_study_by_iteration(
     for i in range(0, len(completed), batch_size):
         batch = completed[i : i + batch_size]
         so_far = completed[: i + batch_size]
-        rows.append(
-            {
-                "iteration":       i // batch_size + 1,
-                "trials":          f"{batch[0].number}–{batch[-1].number}",
-                "batch_best":      min(t.value for t in batch),
-                "cumulative_best": min(t.value for t in so_far),
-                "n_complete":      len(so_far),
-            }
-        )
+        rows.append({
+            "iteration":       i // batch_size + 1,
+            "trials":          f"{batch[0].number}–{batch[-1].number}",
+            "batch_best":      min(t.value for t in batch),
+            "cumulative_best": min(t.value for t in so_far),
+            "n_complete":      len(so_far),
+        })
     return pd.DataFrame(rows)
 
 # ---------------------------------------------------------------------------
@@ -123,12 +115,14 @@ def summarize_study_by_iteration(
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    sampler = qEISampler(
+    module = optunahub.load_module(package="samplers/batch_sampler")
+    BatchSampler = module.BatchSampler
+
+    sampler = BatchSampler(
         search_space=SEARCH_SPACE,
+        suggest_fn=partial(modal_suggest, direction="minimize", api_url=API_URL, n_candidates=512, train_steps=75),
         n_startup_trials=N_STARTUP,
         q=Q,
-        n_candidates=512,
-        train_steps=75,
         seed=42,
     )
 

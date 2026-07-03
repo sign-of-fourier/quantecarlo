@@ -17,6 +17,7 @@ def fantasize_suggest(
     y: list[float],
     search_space: list,
     q: int,
+    direction: str = "minimize",
     n_candidates: int = 512,
     noise: float = 1e-3,
     xi: float = 0.01,
@@ -34,11 +35,14 @@ def fantasize_suggest(
     X:
         Completed-trial parameter vectors, shape (n, d).
     y:
-        Raw objective values — lower is better (minimize convention).
+        Raw objective values. Pass in the same convention as the Optuna study
+        direction — lower is better for "minimize", higher is better for "maximize".
     search_space:
         DimSpec-like objects with .name, .type, .low, .high, .log, .step.
     q:
         Number of candidates to return.
+    direction:
+        "minimize" or "maximize" — must match the Optuna study direction.
     n_candidates:
         Random candidates evaluated per GP call.
     noise:
@@ -69,8 +73,10 @@ def fantasize_suggest(
     X_arr = np.array(X, dtype=float)
     X_unit = np.column_stack([_to_unit(X_arr[:, i], i) for i in range(d)])
 
-    # Standardise y for GP numerical stability
+    # GP always works higher-is-better internally; negate for minimize studies.
     y_arr = np.array(y, dtype=float)
+    if direction == "minimize":
+        y_arr = -y_arr
     y_std = y_arr.std()
     if y_std < 1e-8:
         y_std = 1.0
@@ -111,10 +117,10 @@ def fantasize_suggest(
         var = np.maximum(1.0 - np.sum(v ** 2, axis=0), 1e-9)
         sigma = np.sqrt(var)
 
-        # Expected Improvement (minimise)
-        best_y = y_aug.min()
-        z = (best_y - xi - mu) / sigma
-        ei = (best_y - xi - mu) * norm.cdf(z) + sigma * norm.pdf(z)
+        # Expected Improvement (maximise — y_aug is already higher-is-better)
+        best_y = y_aug.max()
+        z = (mu - best_y - xi) / sigma
+        ei = (mu - best_y - xi) * norm.cdf(z) + sigma * norm.pdf(z)
 
         idx = int(np.argmax(ei))
         best_unit = cands[idx]

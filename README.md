@@ -1,6 +1,11 @@
 # quantecarlo
 
-Batch Bayesian optimization for [Optuna](https://optuna.org) using **q-Expected Improvement (q-EI)**. Drop in one sampler, point it at a hosted GP endpoint, and get a batch of `q` well-chosen candidates back per iteration instead of one at a time.
+Batch Bayesian optimization for [Optuna](https://optuna.org) using **q-Expected Improvement (q-EI)**. Two drop-in `suggest_fn` implementations for the optunahub [`BatchSampler`](https://hub.optuna.org/samplers/batch_sampler/):
+
+| Function | Description |
+|---|---|
+| `fantasize_suggest` | Self-contained in-process GP (numpy/scipy). No server required. |
+| `modal_suggest` | Delegates to a hosted GPU GP endpoint (Modal). Higher quality, requires deployment. |
 
 ---
 
@@ -8,183 +13,136 @@ Batch Bayesian optimization for [Optuna](https://optuna.org) using **q-Expected 
 
 ```bash
 pip install quantecarlo
+pip install optunahub
 ```
 
+### In-process GP — no server required
+
 ```python
-import warnings
-from concurrent.futures import ThreadPoolExecutor
-
 import optuna
-from optuna.trial import TrialState
+import optunahub
+from functools import partial
+from quantecarlo import DimSpec, fantasize_suggest
 
-from quantecarlo import DimSpec, qEISampler
-
-# The DimSpec names and bounds must match the suggest_* calls in the objective.
 search_space = [
     DimSpec(name="x", type="float", low=-5.0, high=5.0),
     DimSpec(name="y", type="float", low=-5.0, high=5.0),
 ]
 
-Q = 4               # batch size; also the number of parallel workers
-N_STARTUP = 8       # random warm-up trials before the GP kicks in
-N_ITERATIONS = 10   # total trials = N_ITERATIONS × Q
+module = optunahub.load_module("package/samplers/batch_sampler")
+BatchSampler = module.BatchSampler
 
-def objective(trial: optuna.Trial) -> float:
+sampler = BatchSampler(
+    search_space=search_space,
+    suggest_fn=partial(fantasize_suggest, direction="minimize"),
+    q=4,
+    n_startup_trials=8,
+)
+
+def objective(trial):
     x = trial.suggest_float("x", -5.0, 5.0)
     y = trial.suggest_float("y", -5.0, 5.0)
-    return (x - 1.3) ** 2 + (y + 0.7) ** 2   # minimum at (1.3, -0.7)
+    return (x - 1.3) ** 2 + (y + 0.7) ** 2
 
-sampler = qEISampler(search_space=search_space, q=Q, n_startup_trials=N_STARTUP)
 study = optuna.create_study(direction="minimize", sampler=sampler)
-optuna.logging.set_verbosity(optuna.logging.WARNING)
-
-with ThreadPoolExecutor(max_workers=Q) as executor:
-    for _ in range(N_ITERATIONS):
-        # Ask Q times first — the first ask fires the API and fills the cache,
-        # the remaining Q-1 asks pop from the cache without a second API call.
-        trials = [study.ask() for _ in range(Q)]
-
-        # Evaluate the batch in parallel, then tell results back.
-        futures = {executor.submit(objective, t): t for t in trials}
-        for future, trial in futures.items():
-            try:
-                study.tell(trial, future.result())
-            except Exception as exc:
-                warnings.warn(str(exc))
-                study.tell(trial, state=TrialState.FAIL)
-
+study.optimize(objective, n_trials=40)
 print(study.best_params)
+```
+
+### Remote GP — Modal endpoint
+
+```python
+from quantecarlo import DimSpec, modal_suggest
+
+sampler = BatchSampler(
+    search_space=search_space,
+    suggest_fn=partial(modal_suggest, direction="minimize",
+                       api_url="https://markshipman4273--bo-gp-service-gp-suggest.modal.run"),
+    q=4,
+    n_startup_trials=8,
+)
 ```
 
 ### Why ask-tell instead of `study.optimize`?
 
-The ask-tell loop is the pattern Optuna uses internally, exposed here explicitly so the sampler can coordinate across parallel workers. With `study.optimize(n_jobs=q)`, each worker thread calls `sample_relative` independently — the sampler has no visibility into what the other `q-1` workers are about to evaluate. The result is that all `q` suggestions are drawn from the same posterior snapshot, and candidates often cluster.
+The ask-tell loop makes batching explicit and correct. With `study.optimize(n_jobs=q)`, each worker calls the sampler independently — no worker knows what the other `q-1` workers are about to try. Suggestions cluster.
 
-The ask-tell pattern fixes this: all `q` asks happen before any evaluation begins. The first ask triggers one API call that selects `q` jointly diverse candidates; asks 2 through `q` pop from the local cache. When the evaluations finish and `tell` reports the results, the next round starts with a fully updated posterior. This is what makes the joint q-EI criterion meaningful in practice.
+The ask-tell pattern fixes this: all `q` asks happen before any evaluation. The first ask fires one API call that selects `q` jointly diverse candidates; asks 2 through `q` pop from a local cache. This is what makes joint q-EI meaningful in practice.
 
-Additional examples are in the [`demos/`](demos/) directory:
-- `demos/demo.py` — NAS on the breast-cancer dataset using an MLP, with explicit batching and a per-iteration progress table.
-- `demos/demo7.py` — comparison of qEISampler (ask-tell) against Optuna's default TPE on a pool-based image ad search task. Requires external data files (not included).
+```python
+from concurrent.futures import ThreadPoolExecutor
 
----
+with ThreadPoolExecutor(max_workers=Q) as executor:
+    for _ in range(N_ITERATIONS):
+        trials = [study.ask() for _ in range(Q)]          # fills cache on ask #1
+        futures = {executor.submit(objective, t): t for t in trials}
+        for future, trial in futures.items():
+            study.tell(trial, future.result())
+```
 
-## What's happening under the hood (you don't need to touch any of this)
-
-The GP fitting and q-EI scoring run on a GPU cluster hosted remotely (currently Modal). Only the inputs to your objective function — hyperparameter values and their corresponding scores — are sent to the service. Your training data, model weights, or any other data used inside your objective never leave your machine.
-
-Each time the local suggestion cache runs dry, `qEISampler` POSTs your observed `(X, y)` pairs to that remote GP service. That service:
-
-1. **Normalises** each parameter to [0, 1] (log-scale for `log=True` dims).
-2. **Rank-transforms** `y` to standard-normal via the Probability Integral Transform — so the GP always sees well-behaved Gaussian targets regardless of the shape of your objective's distribution.
-3. **Fits an ExactGP** (Matérn-5/2 ARD kernel) on a GPU via Adam on the marginal log-likelihood.
-4. **Draws `n_candidates` random candidate batches** of size `q` and scores each batch jointly with q-EI.
-5. **Returns the highest-scoring batch** decoded back to your original parameter scale. Int dims are snapped to the nearest integer.
-
-The sampler then hands out one candidate per `study.ask()` call from the local cache. The next API call doesn't fire until the cache is exhausted — so `q` threads share a single round-trip.
+See `demos/demo.py` for the full working example.
 
 ---
 
-## Parameters
+## Reference
 
 ### `DimSpec`
 
-Describes one dimension of your search space.
+Describes one dimension of the search space.
 
-| Field  | Type                    | Description |
-|--------|-------------------------|-------------|
-| `name` | `str`                   | Must match the corresponding `suggest_*` call in your objective. |
-| `type` | `"float"` \| `"int"`   | Continuous float or integer. Int dims are snapped on decode. |
-| `low`  | `float`                 | Lower bound (inclusive). |
-| `high` | `float`                 | Upper bound (inclusive). |
-| `log`  | `bool`                  | Log-uniform sampling. Use for parameters that span orders of magnitude (learning rates, weight decay). Default `False`. |
-| `step` | `float \| None`         | Grid step for `int` dims. Default `1`. |
+| Field  | Type                  | Description |
+|--------|-----------------------|-------------|
+| `name` | `str`                 | Must match the `suggest_*` call in your objective. |
+| `type` | `"float"` \| `"int"` | Continuous float or integer (snapped on decode). |
+| `low`  | `float`               | Lower bound (inclusive). |
+| `high` | `float`               | Upper bound (inclusive). |
+| `log`  | `bool`                | Log-uniform sampling. Default `False`. |
+| `step` | `float \| None`       | Grid step for `int` dims. Default `1`. |
 
-Categorical dimensions are not yet supported.
-
-### `qEISampler`
-
-| Parameter         | Default        | Description |
-|-------------------|----------------|-------------|
-| `search_space`    | —              | List of `DimSpec`, one per hyperparameter. |
-| `api_url`         | *(hosted)*     | GP endpoint URL. Override only if self-hosting. |
-| `n_startup_trials`| `8`            | Number of random trials before the GP is used. Too few observations make GP fitting unreliable. |
-| `q`               | `4`            | Batch size. Set `n_jobs=q` in `study.optimize` to evaluate the batch in parallel. |
-| `n_candidates`    | `512`          | Random candidate batches scored per API call. Larger = better coverage; diminishing returns above ~1024 for most spaces. |
-| `train_steps`     | `60`           | Adam steps for GP kernel hyperparameter optimisation. Increase for tighter fits on noisy objectives. |
-| `lr`              | `0.1`          | Adam learning rate for GP training. |
-| `xi`              | `0.01`         | EI exploration bonus. Larger values bias toward uncertain regions; smaller values exploit the current best. |
-| `mode`            | `"production"` | `"debug"` returns the full GP posterior surface in the API response — useful for diagnostics. |
-| `seed`            | `None`         | Random seed for the fallback random sampler. |
-| `timeout`         | `120.0`        | HTTP timeout in seconds for the API call. |
-
----
-
-## Multi-group optimisation (`MultiGroupqEISampler`)
-
-Use `MultiGroupqEISampler` when you have **N groups with different search
-space sizes** and want to optimise over them jointly.  The canonical case
-is comparing candidates across platforms whose embedding dimensions differ
-(e.g. 64-dim Meta ad embeddings vs 32-dim Google RSA embeddings).
+### `modal_suggest`
 
 ```python
-from quantecarlo import DimSpec, MultiGroupqEISampler
-
-# Each group's DimSpec list can have a different length.
-# The sampler makes one API call per group automatically.
-sampler = MultiGroupqEISampler(
-    groups=[
-        ("meta",   [DimSpec(f"x{i}", "float", lo, hi) for i in range(64)]),
-        ("google", [DimSpec(f"x{i}", "float", lo, hi) for i in range(32)]),
-        # Add more groups here — each gets its own API call.
-    ],
-    api_url="https://...",
-    n_startup_trials=8,
-    q=4,
-)
-
-# One Optuna study per group; study_name must match the group name above.
-study_meta   = optuna.create_study(study_name="meta",   sampler=sampler)
-study_google = optuna.create_study(study_name="google", sampler=sampler)
-sampler.register_study("meta",   study_meta)
-sampler.register_study("google", study_google)
+modal_suggest(X, y, search_space, q, *, direction="minimize", api_url, n_candidates=512,
+              train_steps=60, lr=0.1, xi=0.01, mode="production", seed=None, timeout=120.0)
 ```
 
-**How it differs from running N independent `qEISampler` instances:**
+Sends `X`, `y`, and a random candidate pool to the Modal GP endpoint; returns the highest q-EI batch. Bind parameters with `functools.partial` before passing to `BatchSampler`.
 
-An independent sampler for each group would rank-normalise each group's
-`y` values in isolation.  A Meta trial with score 5.1 and a Google trial
-with score 4.4 might produce identical GP posterior means — not because
-they are equivalent, but because the normalisation was anchored to
-different distributions.
+| Parameter      | Default          | Description |
+|----------------|------------------|-------------|
+| `direction`    | `"minimize"`     | Must match the Optuna study direction. |
+| `api_url`      | *(hosted)*       | Modal GP endpoint URL. |
+| `n_candidates` | `512`            | Random candidates scored per call. |
+| `train_steps`  | `60`             | Adam steps for GP kernel optimisation. |
+| `lr`           | `0.1`            | Adam learning rate. |
+| `xi`           | `0.01`           | EI exploration bonus. |
+| `mode`         | `"production"`   | `"debug"` returns full posterior arrays. |
+| `seed`         | `None`           | Random seed for the candidate pool. |
+| `timeout`      | `120.0`          | HTTP timeout in seconds. |
 
-`MultiGroupqEISampler` fits a single ECDF on the **combined** pool of
-all groups' y values before sending anything to the API.  Every group's
-targets are on the same scale, so the returned EI values are directly
-comparable.  This matters when you want to surface "the globally best
-next thing to try" regardless of which group it comes from.
-
-**Ask-tell pattern for multiple groups:**
+### `fantasize_suggest`
 
 ```python
-# Ask from ALL studies before evaluating any of them.
-# The first ask on any study triggers a cross-group BO run (one API call
-# per group) and fills every group's cache simultaneously.
-for _ in range(n_iterations):
-    trials_meta   = [study_meta.ask()   for _ in range(q)]
-    trials_google = [study_google.ask() for _ in range(q)]
-    # ... evaluate all in parallel ...
-    for t, v in zip(trials_meta,   meta_values):   study_meta.tell(t, v)
-    for t, v in zip(trials_google, google_values): study_google.tell(t, v)
+fantasize_suggest(X, y, search_space, q, direction="minimize", n_candidates=512,
+                  noise=1e-3, xi=0.01, seed=None)
 ```
+
+In-process RBF GP with sequential kriging (fantasization). Picks one candidate per GP fit, then fantasizes its outcome as the posterior mean before the next pick — so the batch spreads across the space without a remote call.
+
+| Parameter      | Default      | Description |
+|----------------|--------------|-------------|
+| `direction`    | `"minimize"` | Must match the Optuna study direction. |
+| `n_candidates` | `512`        | Random candidates evaluated per GP call. |
+| `noise`        | `1e-3`       | GP observation noise variance. |
+| `xi`           | `0.01`       | EI exploration bonus. |
+| `seed`         | `None`       | Random seed for the candidate pool. |
 
 ---
 
 ## Why q-EI instead of just adding more threads?
 
-Running `study.optimize(n_jobs=q)` with a standard sampler (TPE, random) does parallelize objective evaluation, but each worker samples **independently** — it has no idea what the other `q-1` workers are about to try. You often end up with a batch where several candidates cluster near the same local optimum.
+Running `study.optimize(n_jobs=q)` with a standard sampler (TPE, random) parallelises evaluation but each worker samples **independently** — it has no visibility into what the other `q-1` workers are about to try. Candidates often cluster near the same local optimum.
 
-**q-EI scores the whole batch jointly.** It computes the expected improvement of the *best point in the batch* over the current best, taking into account the full joint posterior covariance across the `q` candidates. The optimizer naturally diversifies: a second candidate near an already-selected point contributes little to the joint maximum, so the algorithm spreads the batch across promising but distinct regions.
+**q-EI scores the whole batch jointly.** It computes the expected improvement of the *best point in the batch* over the current best, accounting for the full joint posterior covariance across all `q` candidates. The algorithm naturally diversifies: a second candidate near an already-selected point contributes little to the joint maximum, so the batch spreads across promising but distinct regions.
 
-In practice this means each batch of `q` trials carries more information than `q` independently-drawn trials. You cover the space more efficiently and tend to reach good solutions in fewer total function evaluations — which matters when each evaluation is expensive (a training run, an experiment, a simulation).
-
-The cost is one API call per batch (a few seconds for a warm GP endpoint) in exchange for a smarter set of `q` candidates. That tradeoff is almost always worth it when objective evaluations take more than a minute.
+Each batch of `q` trials carries more information than `q` independently-drawn trials. You reach good solutions in fewer total evaluations — which matters when each evaluation is expensive (a training run, an experiment, a simulation).

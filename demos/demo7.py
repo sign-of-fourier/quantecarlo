@@ -1,10 +1,10 @@
-# demo7.py — Experiment A (qEISampler ask-tell) vs Experiment B (Optuna TPE, n_jobs=4)
+# demo7.py — Experiment A (BatchSampler + modal_suggest ask-tell) vs Experiment B (Optuna TPE, n_jobs=4)
 #
 # Both experiments use Optuna on a pool of ads with pre-computed image embeddings
 # and ground-truth ratings (1–7).
 #
-# Experiment A: ask-tell with qEISampler
-#   study.ask() × Q  →  qEISampler (GP + q-EI)  →  nearest-pool-member  →  study.tell() × Q
+# Experiment A: ask-tell with BatchSampler + modal_suggest
+#   study.ask() × Q  →  modal_suggest (GP + q-EI)  →  nearest-pool-member  →  study.tell() × Q
 #   Sampling is sequential and batch-aware: all Q asks precede any evaluation, so
 #   the GP sees an empty pending cache on ask #1 and selects Q jointly diverse
 #   candidates in one API call.  Requires a running GP endpoint.
@@ -27,20 +27,21 @@
 #
 # This demo is not self-contained: the data files are part of a separate experiment
 # repo and are not included here.  It is provided as a reference implementation of
-# the qEISampler ask-tell pattern on a real pool-based search task.
+# the BatchSampler + modal_suggest ask-tell pattern on a real pool-based search task.
 #
 # Usage:
 #   1. Deploy the GP service (see README for the backend repo / hosted endpoint).
 #   2. Paste the endpoint URL into API_URL below.
 #   3. python demos/demo7.py
 
-import sys
 import os
+import sys
 import threading
 import warnings
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from datetime import datetime
+from functools import partial
 from sklearn.exceptions import ConvergenceWarning
 warnings.filterwarnings("ignore", category=ConvergenceWarning)
 
@@ -52,17 +53,18 @@ from pathlib import Path
 from sklearn.decomposition import PCA
 
 import optuna
+import optunahub
 from optuna.distributions import FloatDistribution
 from optuna.samplers import TPESampler
 from optuna.trial import FrozenTrial, TrialState
 
-from quantecarlo import DimSpec, qEISampler
+from quantecarlo import DimSpec, modal_suggest
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
-API_URL = "https://your-gp-endpoint.example.com/suggest"
+API_URL = "https://markshipman4273--bo-gp-service-gp-suggest.modal.run"
 
 CHI_JSON  = Path("ads_all_labels.json")
 EMB_CACHE = Path("embedding_cache")
@@ -112,12 +114,10 @@ def _dim_bounds(X_pca: np.ndarray) -> list[tuple[float, float]]:
 
 
 def _study_value(rating: float) -> float:
-    # qEISampler negates trial values before passing to q-EI (which maximises).
-    # Passing -rating for a maximisation objective means the sampler computes
-    # y = -(-rating) = +rating, and q-EI then seeks the highest rating.
-    # For minimisation, passing +rating means y = -rating, so q-EI maximises
-    # -rating, i.e. minimises rating.  The same convention is used for TPE so
-    # both experiments see identical stored values.
+    # Study is always direction="minimize". For a maximize objective (find highest
+    # rating) we store -rating so Optuna minimises it. modal_suggest receives raw
+    # study values and handles conversion to the GP's higher-is-better convention
+    # via direction="minimize". TPE sees the same stored values for a fair comparison.
     return -float(rating) if DIRECTION == "maximize" else float(rating)
 
 
@@ -146,7 +146,7 @@ def _inject_warmup(
         ))
 
 # ---------------------------------------------------------------------------
-# Experiment A: qEISampler + ask-tell
+# Experiment A: BatchSampler + modal_suggest ask-tell
 # ---------------------------------------------------------------------------
 
 def run_arm_qei(
@@ -167,14 +167,13 @@ def run_arm_qei(
     fixed_dists = {f"pca_{i}": FloatDistribution(bounds[i][0], bounds[i][1])
                    for i in range(PCA_DIMS)}
 
-    sampler = qEISampler(
-        api_url=API_URL,
+    module = optunahub.load_module(package="samplers/batch_sampler")
+    sampler = module.BatchSampler(
         search_space=search_space,
+        suggest_fn=partial(modal_suggest, direction="minimize", api_url=API_URL,
+                           n_candidates=512, train_steps=100, seed=seed),
         n_startup_trials=WARM_UP,
         q=BATCH_SIZE,
-        n_candidates=512,
-        train_steps=100,
-        seed=seed,
     )
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     study = optuna.create_study(direction="minimize", sampler=sampler)
@@ -183,7 +182,7 @@ def run_arm_qei(
     cumulative_best = []
 
     for _ in range(N_ITERATIONS):
-        # All Q asks before any tell.  qEISampler fires one API call on ask #1
+        # All Q asks before any tell.  BatchSampler fires one API call on ask #1
         # (cache empty), fills its deque with Q candidates, then pops for asks
         # #2..Q without a second API call.
         trials_batch = [study.ask(fixed_distributions=fixed_dists) for _ in range(BATCH_SIZE)]
@@ -282,7 +281,7 @@ def run_all_seeds(
     bounds: list[tuple[float, float]],
     use_qei: bool,
 ) -> dict:
-    label  = "qEISampler (ask-tell)" if use_qei else "Optuna TPE (n_jobs=4)"
+    label  = "BatchSampler+modal_suggest (ask-tell)" if use_qei else "Optuna TPE (n_jobs=4)"
     run_fn = run_arm_qei if use_qei else run_arm_tpe
 
     print(f"\n{'='*60}")
@@ -325,7 +324,7 @@ def print_report(qei: dict, tpe: dict) -> None:
         advantage = tpe["avg_bests"][-1] - qei["avg_bests"][-1]
 
     print(f"\n\n{'='*65}")
-    print(f"RESULTS — qEISampler (ask-tell) vs Optuna TPE (n_jobs=4)")
+    print(f"RESULTS — BatchSampler+modal_suggest (ask-tell) vs Optuna TPE (n_jobs=4)")
     print(f"Ads pool, mean rating 1–7  |  {goal}")
     print(f"{'='*65}\n")
 
@@ -347,13 +346,13 @@ def print_report(qei: dict, tpe: dict) -> None:
     print(pd.DataFrame(rows).to_string(index=False))
 
     print(f"\nFinal cumulative-best (mean ± std, {N_REPS} seeds):")
-    print(f"  qEISampler : {qei['avg_bests'][-1]:.4f} ± {qei['std_bests'][-1]:.4f}")
-    print(f"  Optuna TPE : {tpe['avg_bests'][-1]:.4f} ± {tpe['std_bests'][-1]:.4f}")
-    print(f"  qEISampler advantage: {advantage:+.4f}  "
-          f"(positive = qEI found a {'higher' if DIRECTION == 'maximize' else 'lower'} rating)")
+    print(f"  BatchSampler+modal_suggest : {qei['avg_bests'][-1]:.4f} ± {qei['std_bests'][-1]:.4f}")
+    print(f"  Optuna TPE                 : {tpe['avg_bests'][-1]:.4f} ± {tpe['std_bests'][-1]:.4f}")
+    print(f"  Advantage: {advantage:+.4f}  "
+          f"(positive = GP found a {'higher' if DIRECTION == 'maximize' else 'lower'} rating)")
     print(f"\nAvg wall-clock time per run:")
-    print(f"  qEISampler : {qei['avg_time_s']:.1f}s ± {qei['std_time_s']:.1f}s")
-    print(f"  Optuna TPE : {tpe['avg_time_s']:.1f}s ± {tpe['std_time_s']:.1f}s")
+    print(f"  BatchSampler+modal_suggest : {qei['avg_time_s']:.1f}s ± {qei['std_time_s']:.1f}s")
+    print(f"  Optuna TPE                 : {tpe['avg_time_s']:.1f}s ± {tpe['std_time_s']:.1f}s")
 
 
 def main() -> None:
