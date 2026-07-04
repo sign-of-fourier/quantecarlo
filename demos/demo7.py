@@ -171,7 +171,7 @@ def run_arm_qei(
     sampler = module.BatchSampler(
         search_space=search_space,
         suggest_fn=partial(modal_suggest, direction="minimize", api_url=API_URL,
-                           n_candidates=512, train_steps=100, seed=seed),
+                           n_probe_points=512, train_steps=100, seed=seed),
         n_startup_trials=WARM_UP,
         q=BATCH_SIZE,
     )

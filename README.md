@@ -7,6 +7,19 @@ Batch Bayesian optimization for [Optuna](https://optuna.org) using **q-Expected 
 | `fantasize_suggest` | Self-contained in-process GP (numpy/scipy). No server required. |
 | `modal_suggest` | Delegates to a hosted GPU GP endpoint (Modal). Higher quality, requires deployment. |
 
+**Both of these are for continuous search spaces only** — spaces with no enumerable set
+of valid points (a learning rate, a hidden-layer-size range). That's their whole reason
+for existing: with nothing to enumerate, some finite set of points has to be invented
+before a GP can be asked anything, and `n_probe_points` controls how many.
+
+**If you already have a real, finite, enumerable set of candidates** — a product
+catalog, an ad pool, embeddings for a fixed set of items — don't route it through
+either `suggest_fn`. Call [`call_modal_api`](#call_modal_api) directly with your real
+vectors as `candidates`. Going through `modal_suggest`/`DimSpec` in that case means
+inventing random points, asking the GP to pick among the fakes, then snapping the
+result back to the nearest real item afterward — an approximation of an approximation
+that buys you nothing when the real candidates were available to hand the GP directly.
+
 ---
 
 ## Quickstart
@@ -102,23 +115,65 @@ Describes one dimension of the search space.
 ### `modal_suggest`
 
 ```python
-modal_suggest(X, y, search_space, q, *, direction="minimize", api_url, n_candidates=512,
-              train_steps=60, lr=0.1, xi=0.01, mode="production", seed=None, timeout=120.0)
+modal_suggest(X, y, search_space, q, *, direction="minimize", api_url, n_probe_points=512,
+              n_candidate_batches=None, train_steps=60, lr=0.1, xi=0.01,
+              mode="production", seed=None, timeout=120.0)
 ```
 
-Sends `X`, `y`, and a random candidate pool to the Modal GP endpoint; returns the highest q-EI batch. Bind parameters with `functools.partial` before passing to `BatchSampler`.
+Invents `n_probe_points` random continuous points from `search_space`'s bounds, sends them with `X`/`y` to the Modal GP endpoint, returns the highest q-EI batch. Bind parameters with `functools.partial` before passing to `BatchSampler`.
 
-| Parameter      | Default          | Description |
-|----------------|------------------|-------------|
-| `direction`    | `"minimize"`     | Must match the Optuna study direction. |
-| `api_url`      | *(hosted)*       | Modal GP endpoint URL. |
-| `n_candidates` | `512`            | Random candidates scored per call. |
-| `train_steps`  | `60`             | Adam steps for GP kernel optimisation. |
-| `lr`           | `0.1`            | Adam learning rate. |
-| `xi`           | `0.01`           | EI exploration bonus. |
-| `mode`         | `"production"`   | `"debug"` returns full posterior arrays. |
-| `seed`         | `None`           | Random seed for the candidate pool. |
-| `timeout`      | `120.0`          | HTTP timeout in seconds. |
+Only use this for a genuinely continuous `search_space`. If you have a real enumerable candidate pool, skip this function and call [`call_modal_api`](#call_modal_api) directly — see the note at the top of this README.
+
+| Parameter             | Default          | Description |
+|-----------------------|------------------|-------------|
+| `direction`           | `"minimize"`     | Must match the Optuna study direction. |
+| `api_url`             | *(hosted)*       | Modal GP endpoint URL. |
+| `n_probe_points`      | `512`            | Random continuous points invented per call and sent as the GP's candidate pool. Meaningless once you're calling `call_modal_api` with real points — there's nothing left to invent. |
+| `n_candidate_batches` | `n_probe_points` | How many random size-`q` index-combinations of that pool the server scores with joint q-EI. Independent of `n_probe_points` — pass both explicitly to decouple them. |
+| `train_steps`         | `60`             | Adam steps for GP kernel optimisation. |
+| `lr`                  | `0.1`            | Adam learning rate. |
+| `xi`                  | `0.01`           | EI exploration bonus. |
+| `mode`                | `"production"`   | `"debug"` returns full posterior arrays. |
+| `seed`                | `None`           | Random seed for the invented candidate pool. |
+| `timeout`             | `120.0`          | HTTP timeout in seconds. |
+
+### `call_modal_api`
+
+```python
+call_modal_api(api_url, X, y, candidates, q=2, n_batches=512, train_steps=100,
+                lr=0.1, xi=0.01, mode="production", timeout=120.0)
+```
+
+The raw Modal HTTP client `modal_suggest` is built on — and the function to call directly whenever you have a real, materialized set of candidates (an embedded product catalog, an ad pool, any finite list you can turn into vectors). No `DimSpec`, no `BatchSampler`, no invented points: `candidates` is exactly the array you pass, and each returned `index` is a real index into it.
+
+```python
+import numpy as np
+from quantecarlo import call_modal_api
+
+# X/y: your observed points and their scores so far (higher = better; negate first if minimizing)
+# candidates: the real, unclaimed pool — e.g. embeddings for products/ads not yet tried
+picks = call_modal_api(api_url, X, y, candidates, q=4)
+for p in picks:
+    real_item = candidates[p["index"]]   # already a real candidate — no snapping needed
+```
+
+| Parameter     | Default        | Description |
+|---------------|----------------|-------------|
+| `api_url`     | *(required)*   | Modal GP endpoint URL. |
+| `X`           | *(required)*   | Observed points, shape `(n_obs, n_dims)`. |
+| `y`           | *(required)*   | Observed scores, higher = better. Negate first for minimisation. |
+| `candidates`  | *(required)*   | Discrete candidate pool to select from, shape `(n_cands, n_dims)` — your real items. |
+| `q`           | `2`            | Number of candidates to return. |
+| `n_batches`   | `512`          | Random size-`q` index-combinations of `candidates` scored with joint q-EI before the best one is returned. |
+| `train_steps` | `100`          | Adam steps for GP kernel optimisation. |
+| `lr`          | `0.1`          | Adam learning rate. |
+| `xi`          | `0.01`         | EI exploration bonus. |
+| `mode`        | `"production"` | `"debug"` returns full posterior arrays. |
+| `timeout`     | `120.0`        | HTTP timeout in seconds. |
+
+Returns `list[dict]`, each with `index` (int, into `candidates`), `x` (the candidate vector), `mu` (GP posterior mean), `sigma` (GP posterior std).
+
+See `demos/demo7_pca_vs_pls.py`'s `run_arm_qei` for a worked ask-tell loop built directly on this function, with no Optuna/`BatchSampler` involved at all.
 
 ### `fantasize_suggest`
 
