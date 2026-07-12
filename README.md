@@ -173,7 +173,7 @@ for p in picks:
 
 Returns `list[dict]`, each with `index` (int, into `candidates`), `x` (the candidate vector), `mu` (GP posterior mean), `sigma` (GP posterior std).
 
-See `demos/demo7_pca_vs_pls.py`'s `run_arm_qei` for a worked ask-tell loop built directly on this function, with no Optuna/`BatchSampler` involved at all.
+See `demos/demo9.py`'s `run_arm_qei` for a worked ask-tell loop built directly on this function, with no Optuna/`BatchSampler` involved at all.
 
 ### `fantasize_suggest`
 

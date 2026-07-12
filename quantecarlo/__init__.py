@@ -1,5 +1,5 @@
 from quantecarlo.bo_sampler import DimSpec, modal_suggest
-from quantecarlo._modal_api import call_modal_api, call_modal_api_multioutput
+from quantecarlo._modal_api import call_modal_api, call_modal_api_multioutput, call_modal_api_composite
 from quantecarlo._fantasize import fantasize_suggest
 
 __all__ = [
@@ -7,5 +7,6 @@ __all__ = [
     "modal_suggest",
     "call_modal_api",
     "call_modal_api_multioutput",
+    "call_modal_api_composite",
     "fantasize_suggest",
 ]

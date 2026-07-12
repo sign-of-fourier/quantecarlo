@@ -251,9 +251,12 @@ has not been exercised since the rename.
 
 ### 4. What the automated tests do NOT cover
 
-- **`demo7.py` actually running**: it imports cleanly but requires `ads_all_labels.json`
-  and `embedding_cache/` data files not in this repo. The import is verified; a full
-  run is not.
+- **`demo7.py` actually running**: it moved to `~/projects/chi_bad_ads/demos/`
+  (2026-07-12) since it requires that repo's `ads_all_labels.json` and
+  `embedding_cache/` data files, which were never in this repo. `demo9.py` (new,
+  self-contained, sklearn digits + synthetic score) covers the same
+  categorical-vs-qEI comparison in this repo, but a full run of the moved `demo7*`
+  family against real ad data is still unverified by anything automated here.
 - **`fantasize_suggest` in a real Optuna study**: unit tests verify the math and
   output format, but it has not been run inside a `BatchSampler` end-to-end since
   the `direction` parameter was added.

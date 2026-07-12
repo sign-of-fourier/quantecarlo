@@ -150,3 +150,78 @@ def call_modal_api_multioutput(
         }
         for c in data["candidates"]
     ]
+
+
+def call_modal_api_composite(
+    api_url: str,
+    text: np.ndarray,
+    image: np.ndarray,
+    has_image: np.ndarray,
+    y: np.ndarray,
+    text_candidates: np.ndarray,
+    image_candidates: np.ndarray,
+    has_image_candidates: np.ndarray,
+    d_train: np.ndarray,
+    d_cands: np.ndarray,
+    rho: float = 0.5,
+    q: int = 2,
+    n_batches: int = 512,
+    train_steps: int = 100,
+    lr: float = 0.1,
+    xi: float = 0.01,
+    mode: str = "production",
+    timeout: float = 120.0,
+) -> list[dict[str, Any]]:
+    """POST to the Modal GP composite-kernel endpoint and return q candidate dicts.
+
+    One row per ad (not one row per platform-PCA'd combination). Each row
+    carries its own text vector, image vector (placeholder allowed when
+    absent), and a has_image flag. The server sums a shared text RBF kernel
+    with a masked shared image RBF kernel, then applies the same platform-level
+    B/rho coregionalization as call_modal_api_multioutput -- this is an
+    additive-kernel alternative to that function, not a replacement; both are
+    supported server-side (kernel_mode="composite" vs the default path).
+
+    text/image/has_image: shape (n_obs, ...) — training rows.
+    text_candidates/image_candidates/has_image_candidates: shape (n_cands, ...).
+    d_train/d_cands: int array, output index per row (e.g. 0=Meta, 1=Google) —
+        same meaning and same 2-output constraint as call_modal_api_multioutput.
+    rho: platform-level correlation in (-1, 1), same B = [[1,rho],[rho,1]].
+
+    Return format is identical to call_modal_api / call_modal_api_multioutput.
+    """
+    payload: dict[str, Any] = {
+        "X": [],
+        "y": y.tolist(),
+        "candidates": [],
+        "kernel_mode": "composite",
+        "text": text.tolist(),
+        "image": image.tolist(),
+        "has_image": has_image.tolist(),
+        "text_candidates": text_candidates.tolist(),
+        "image_candidates": image_candidates.tolist(),
+        "has_image_candidates": has_image_candidates.tolist(),
+        "d": d_train.tolist(),
+        "d_candidates": d_cands.tolist(),
+        "rho": float(rho),
+        "q": q,
+        "n_batches": n_batches,
+        "train_steps": train_steps,
+        "lr": lr,
+        "xi": xi,
+        "mode": mode,
+    }
+    logger.debug(
+        "call_modal_api_composite: POST %s (n_obs=%d, n_cands=%d, q=%d, rho=%.2f)",
+        api_url, len(y), len(text_candidates), q, rho,
+    )
+    data = _post(api_url, payload, timeout)
+    return [
+        {
+            "index": int(c["index"]),
+            "x": np.array(c["x"], dtype=np.float32),
+            "mu": c.get("mu"),
+            "sigma": c.get("sigma"),
+        }
+        for c in data["candidates"]
+    ]

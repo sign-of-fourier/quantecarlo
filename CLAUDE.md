@@ -59,17 +59,23 @@ or `DimSpec` — call `call_modal_api` directly with your real vectors as `candi
 Going through the continuous path in that case means inventing random points, asking
 the GP to choose among the fakes, then snapping the result back to the nearest real
 item — an approximation of an approximation with no purpose when the real candidates
-were available to hand the GP directly. See `demos/demo7_pca_vs_pls.py`'s `run_arm_qei`
-for a worked example of the direct-pool pattern (and its module docstring for the full
-reasoning), contrasted with `demos/demo7.py`'s continuous-relaxation `modal_suggest`
-usage.
+were available to hand the GP directly. See `demos/demo9.py`'s `run_arm_qei` for a
+self-contained worked example of the direct-pool pattern (and its module docstring
+for the full reasoning). The `demo7*`/`demo8` family in `~/projects/chi_bad_ads/demos/`
+runs the same pattern against real ad embeddings instead of `demo9.py`'s synthetic
+pool, and still contrasts it against continuous-relaxation `modal_suggest` usage
+(`demo7.py`'s Experiment A).
 
-3. **`call_modal_api` / `call_modal_api_multioutput`** (`quantecarlo/_modal_api.py`) —
-   the raw Modal HTTP client and the **recommended direct entry point whenever you have
-   real, materialized candidate points**. Takes numpy arrays directly (higher = better,
-   no direction param). Used internally by `modal_suggest` and re-exported by
-   `meta-ads-demo`. This is the **single source of truth** for the Modal API contract —
-   update here when the API payload changes.
+3. **`call_modal_api` / `call_modal_api_multioutput` / `call_modal_api_composite`**
+   (`quantecarlo/_modal_api.py`) — the raw Modal HTTP client and the **recommended
+   direct entry point whenever you have real, materialized candidate points**. Takes
+   numpy arrays directly (higher = better, no direction param). Used internally by
+   `modal_suggest` and re-exported by `meta-ads-demo`. This is the **single source of
+   truth** for the Modal API contract — update here when the API payload changes.
+   `call_modal_api_composite` (added 2026-07-06) is a one-row-per-ad alternative to
+   `call_modal_api_multioutput` — server sums a shared text kernel with a masked shared
+   image kernel (`kernel_mode="composite"`) instead of platform-PCA'd concatenation;
+   both are supported server-side, neither replaces the other.
 
 ### `DimSpec` (`quantecarlo/bo_sampler.py`)
 
@@ -121,10 +127,18 @@ for minimize studies so the GP always works higher-is-better. EI formula is maxi
 ```python
 call_modal_api(api_url, X, y, candidates, q, n_batches, train_steps, lr, xi, mode, timeout)
 call_modal_api_multioutput(api_url, X, y, candidates, d_train, d_cands, rho, q, ...)
+call_modal_api_composite(api_url, text, image, has_image, y, text_candidates,
+                          image_candidates, has_image_candidates, d_train, d_cands, rho, q, ...)
 ```
 
-Both take numpy arrays, return `list[dict]` with `index`, `x` (np.ndarray), `mu`, `sigma`.
-`call_modal_api_multioutput` adds `d_train`, `d_cands`, `rho` for the cross-platform GP path.
+All three take numpy arrays, return `list[dict]` with `index`, `x` (np.ndarray), `mu`, `sigma`.
+`call_modal_api_multioutput` adds `d_train`, `d_cands`, `rho` for the cross-platform GP path
+(one row per platform-PCA'd combination). `call_modal_api_composite` is the one-row-per-ad
+alternative — no PCA, no concatenation; the server sums a shared text RBF kernel with a
+masked shared image RBF kernel and applies the same `d`/`rho` coregionalization on top.
+`has_image`/`has_image_candidates` are 0/1 float arrays; rows without an image still need a
+placeholder `image`/`image_candidates` vector (zeros is fine) — the mask zeroes its
+contribution.
 
 **`candidates` here is whatever you pass** — it does not have to be `modal_suggest`'s
 invented continuous points. If you already have real candidate vectors (an embedded
@@ -149,25 +163,28 @@ involved or not.
 - **`demo.py`** — NAS on the breast-cancer dataset using an MLP. Uses `BatchSampler` +
   `modal_suggest` with an explicit ask-tell loop so the batching contract is visible.
   Requires a running Modal endpoint and `optunahub`.
-- **`demo7.py`** — Compares BatchSampler (ask-tell) against Optuna's default TPE
-  (`n_jobs=4`) on a pool-based image ad search task. Requires external data files not
-  included in this repo. Uses `modal_suggest`'s continuous-relaxation path (invented
-  points snapped to the nearest real pool member) for its qEI arm.
-- **`demo7_pca_vs_pls.py`** — Same task as `demo7.py`, run once with PCA and once with
-  PLS as the dimensionality-reduction step, both over an identical held-out test split
-  (see the module docstring for why the split matters for PLS specifically). Its qEI
-  arm calls `call_modal_api` directly against the real remaining pool instead of going
-  through `modal_suggest`/`BatchSampler` — worth reading as the contrast case against
-  `demo7.py`'s continuous-relaxation approach. Its TPE arm still snaps to nearest, since
-  Optuna's `TPESampler` has no discrete-pool mode to call instead. Requires the same
-  external data files as `demo7.py` (paths hardcoded to `~/projects/chi_bad_ads`).
-- **`demo7_categorical_vs_embedding.py`** — The actual hypothesis behind `demo7*`:
-  does exploiting embedding structure beat the normal, embedding-blind way anyone
-  would use Optuna on a fixed discrete pool (`trial.suggest_categorical` over every
-  ad, no embeddings at all)? Compares that categorical-TPE baseline against qEI via
-  `call_modal_api` direct on PCA-reduced embeddings, same pool, same warm-up ads per
-  seed. No train/test split (PCA is unsupervised and nothing here is testing
-  transform generalization). Requires the same external data files as `demo7.py`.
+- **`demo9.py`** — Self-contained version of the `demo7_categorical_vs_embedding.py`
+  hypothesis (does exploiting embedding structure via qEI beat embedding-blind
+  categorical TPE on a fixed pool?) with no external data: pool = a random subset of
+  sklearn's bundled `load_digits()` pixel vectors (64-dim, real feature structure),
+  score = synthetic distance-to-archetype-centroid + noise (not the digit label —
+  the model never sees it, only pixel vectors as candidates). Same two arms,
+  `call_modal_api` direct on the real pool for qEI. Requires only a running Modal
+  endpoint — no `~/projects/chi_bad_ads` data.
+- **`demo_latency_test.py`** — One-off latency probe for `modal_suggest` at a much
+  larger candidate pool (10000 vs `demo9.py`'s hundreds). Synthetic random points,
+  not part of `pytest`. Requires a running Modal endpoint.
+
+The `demo7.py` / `demo7_pca_vs_pls.py` / `demo7_categorical_vs_embedding.py` /
+`demo8.py` family that originally lived here has moved to
+`~/projects/chi_bad_ads/demos/`, since all four hardcode paths into that repo's data
+files (`ads_all_labels.json`, `embedding_cache/`) and don't belong in this repo.
+They cover the same ground as `demo9.py` above, plus a PCA-vs-PLS comparison and a
+PCA-vs-full-embedding-dims comparison, using real ad embeddings and human ratings
+instead of `demo9.py`'s synthetic pool. See that repo's copies for the full
+docstrings — the reasoning is unchanged, only the data paths and (for `demo7.py` /
+`demo7_categorical_vs_embedding.py`) the import style (plain `import quantecarlo`,
+no `sys.path` hack, since `quantecarlo` is `pip install -e`'d there) were updated.
 
 ### API contract (Modal endpoint)
 
