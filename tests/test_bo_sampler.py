@@ -143,7 +143,7 @@ class TestModalSuggest:
 
         assert captured["body"]["y"] == pytest.approx([0.5])
 
-    def test_candidates_length_equals_n_candidates(self):
+    def test_candidates_length_equals_n_probe_points(self):
         dims = _dims()
         X = [[0.01, 32, 1e-4]]
         y = [0.3]
@@ -151,9 +151,34 @@ class TestModalSuggest:
 
         with patch("quantecarlo._modal_api.urllib.request.urlopen", fake_urlopen):
             modal_suggest(X, y, dims, q=1, direction="minimize",
-                          api_url="https://fake.run", n_candidates=128)
+                          api_url="https://fake.run", n_probe_points=128)
 
         assert len(captured["body"]["candidates"]) == 128
+
+    def test_tuning_fields_forwarded_only_when_given(self):
+        dims = _dims()
+        X = [[0.01, 32, 1e-4]]
+        y = [0.3]
+        fake_urlopen, captured = _mock_urlopen(_fake_candidates(dims, 1))
+
+        with patch("quantecarlo._modal_api.urllib.request.urlopen", fake_urlopen):
+            modal_suggest(X, y, dims, q=1, direction="minimize",
+                          api_url="https://fake.run")
+        assert "n_prefilter" not in captured["body"]
+
+        with patch("quantecarlo._modal_api.urllib.request.urlopen", fake_urlopen):
+            modal_suggest(X, y, dims, q=1, direction="minimize",
+                          api_url="https://fake.run",
+                          n_prefilter=2000, orthant_mode="legacy", order=0)
+        assert captured["body"]["n_prefilter"] == 2000
+        assert captured["body"]["orthant_mode"] == "legacy"
+        assert captured["body"]["order"] == 0
+
+    def test_unknown_field_rejected_client_side(self):
+        dims = _dims()
+        with pytest.raises(TypeError, match="rho_threshold"):
+            modal_suggest([[0.01, 32, 1e-4]], [0.3], dims, q=1, direction="minimize",
+                          api_url="https://fake.run", rho_threshold=0.5)
 
     def test_returns_q_dicts_with_correct_param_names(self):
         dims = _dims()

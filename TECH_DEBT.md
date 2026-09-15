@@ -11,7 +11,7 @@ repos without having to survey everything.
 | Repo | Role | Key files |
 |---|---|---|
 | `~/projects/quantecarlo` | pip package — suggest_fns + shared Modal HTTP client | `CLAUDE.md`, `quantecarlo/_modal_api.py`, `quantecarlo/bo_sampler.py`, `quantecarlo/_fantasize.py` |
-| `~/projects/boaz/modal` | Modal GP **server only** — no client code lives here | `modal_gp_api.py`, `API.md` |
+| `~/projects/boaz/modal` | Modal GP **server only** — no client code lives here | `modal_gp_api.py` (the `GPRequest` model is the contract; no markdown docs there) |
 | `~/projects/optunahub-registry` | Community BatchSampler package — PR #376 submitted, do not modify | `package/samplers/batch_sampler/_bo_sampler.py` (read-only reference) |
 | `~/projects/meta-ads-demo` | Production ads app — imports Modal client from quantecarlo | `backend/bo_pipeline/modal_bo.py`, `backend/bo_pipeline/cross_platform.py`, `backend/bo_pipeline/pipeline.py` |
 
@@ -251,9 +251,12 @@ has not been exercised since the rename.
 
 ### 4. What the automated tests do NOT cover
 
-- **`demo7.py` actually running**: it imports cleanly but requires `ads_all_labels.json`
-  and `embedding_cache/` data files not in this repo. The import is verified; a full
-  run is not.
+- **`demo7.py` actually running**: it moved to `~/projects/chi_bad_ads/demos/`
+  (2026-07-12) since it requires that repo's `ads_all_labels.json` and
+  `embedding_cache/` data files, which were never in this repo. `demo9.py` (new,
+  self-contained, sklearn digits + synthetic score) covers the same
+  categorical-vs-qEI comparison in this repo, but a full run of the moved `demo7*`
+  family against real ad data is still unverified by anything automated here.
 - **`fantasize_suggest` in a real Optuna study**: unit tests verify the math and
   output format, but it has not been run inside a `BatchSampler` end-to-end since
   the `direction` parameter was added.

@@ -120,7 +120,7 @@ def main() -> None:
 
     sampler = BatchSampler(
         search_space=SEARCH_SPACE,
-        suggest_fn=partial(modal_suggest, direction="minimize", api_url=API_URL, n_candidates=512, train_steps=75),
+        suggest_fn=partial(modal_suggest, direction="minimize", api_url=API_URL, n_probe_points=512, train_steps=75),
         n_startup_trials=N_STARTUP,
         q=Q,
         seed=42,
