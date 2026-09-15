@@ -43,7 +43,7 @@ class TestModalSuggestLive:
         result = modal_suggest(
             X_OBS, Y_OBS, SEARCH_SPACE, q=2,
             direction="minimize", api_url=MODAL_API_URL,
-            n_candidates=64, train_steps=20,
+            n_probe_points=64, train_steps=20,
         )
         assert len(result) == 2
         assert all(isinstance(p, dict) for p in result)
@@ -52,7 +52,7 @@ class TestModalSuggestLive:
         result = modal_suggest(
             X_OBS, Y_OBS, SEARCH_SPACE, q=2,
             direction="minimize", api_url=MODAL_API_URL,
-            n_candidates=64, train_steps=20,
+            n_probe_points=64, train_steps=20,
         )
         expected_keys = {"lr", "n_hidden", "alpha"}
         for params in result:
@@ -62,7 +62,7 @@ class TestModalSuggestLive:
         result = modal_suggest(
             X_OBS, Y_OBS, SEARCH_SPACE, q=2,
             direction="minimize", api_url=MODAL_API_URL,
-            n_candidates=64, train_steps=20,
+            n_probe_points=64, train_steps=20,
         )
         for params in result:
             assert 1e-4 <= params["lr"] <= 1e-1
@@ -72,7 +72,7 @@ class TestModalSuggestLive:
         result = modal_suggest(
             X_OBS, Y_OBS, SEARCH_SPACE, q=2,
             direction="minimize", api_url=MODAL_API_URL,
-            n_candidates=64, train_steps=20,
+            n_probe_points=64, train_steps=20,
         )
         for params in result:
             assert isinstance(params["n_hidden"], int)
@@ -84,6 +84,6 @@ class TestModalSuggestLive:
         result = modal_suggest(
             X_OBS, y_max, SEARCH_SPACE, q=2,
             direction="maximize", api_url=MODAL_API_URL,
-            n_candidates=64, train_steps=20,
+            n_probe_points=64, train_steps=20,
         )
         assert len(result) == 2

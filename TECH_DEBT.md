@@ -11,7 +11,7 @@ repos without having to survey everything.
 | Repo | Role | Key files |
 |---|---|---|
 | `~/projects/quantecarlo` | pip package — suggest_fns + shared Modal HTTP client | `CLAUDE.md`, `quantecarlo/_modal_api.py`, `quantecarlo/bo_sampler.py`, `quantecarlo/_fantasize.py` |
-| `~/projects/boaz/modal` | Modal GP **server only** — no client code lives here | `modal_gp_api.py`, `API.md` |
+| `~/projects/boaz/modal` | Modal GP **server only** — no client code lives here | `modal_gp_api.py` (the `GPRequest` model is the contract; no markdown docs there) |
 | `~/projects/optunahub-registry` | Community BatchSampler package — PR #376 submitted, do not modify | `package/samplers/batch_sampler/_bo_sampler.py` (read-only reference) |
 | `~/projects/meta-ads-demo` | Production ads app — imports Modal client from quantecarlo | `backend/bo_pipeline/modal_bo.py`, `backend/bo_pipeline/cross_platform.py`, `backend/bo_pipeline/pipeline.py` |
 

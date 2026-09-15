@@ -36,6 +36,7 @@ def modal_suggest(
     mode: str = "production",
     seed: int | None = None,
     timeout: float = 120.0,
+    **tuning: Any,
 ) -> list[dict[str, Any]]:
     """suggest_fn for BatchSampler over a CONTINUOUS search space.
 
@@ -71,6 +72,10 @@ def modal_suggest(
                             compatibility with callers that only ever set one knob;
                             pass both explicitly to decouple them.
 
+    Any further keyword arguments (n_prefilter, ei_direct_max, orthant_mode,
+    order, gh_nodes, gh_nodes_corr) are server-side tuning fields forwarded
+    verbatim by call_modal_api; see quantecarlo._modal_api.
+
     Bind extra parameters with functools.partial before passing to BatchSampler:
 
         from functools import partial
@@ -89,7 +94,7 @@ def modal_suggest(
         api_url, X_arr, y_send, candidates,
         q=q, n_batches=n_candidate_batches if n_candidate_batches is not None else n_probe_points,
         train_steps=train_steps,
-        lr=lr, xi=xi, mode=mode, timeout=timeout,
+        lr=lr, xi=xi, mode=mode, timeout=timeout, **tuning,
     )
 
     results: list[dict[str, Any]] = []

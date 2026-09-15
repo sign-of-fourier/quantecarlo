@@ -117,7 +117,7 @@ Describes one dimension of the search space.
 ```python
 modal_suggest(X, y, search_space, q, *, direction="minimize", api_url, n_probe_points=512,
               n_candidate_batches=None, train_steps=60, lr=0.1, xi=0.01,
-              mode="production", seed=None, timeout=120.0)
+              mode="production", seed=None, timeout=120.0, **tuning)
 ```
 
 Invents `n_probe_points` random continuous points from `search_space`'s bounds, sends them with `X`/`y` to the Modal GP endpoint, returns the highest q-EI batch. Bind parameters with `functools.partial` before passing to `BatchSampler`.
@@ -129,19 +129,20 @@ Only use this for a genuinely continuous `search_space`. If you have a real enum
 | `direction`           | `"minimize"`     | Must match the Optuna study direction. |
 | `api_url`             | *(hosted)*       | Modal GP endpoint URL. |
 | `n_probe_points`      | `512`            | Random continuous points invented per call and sent as the GP's candidate pool. Meaningless once you're calling `call_modal_api` with real points — there's nothing left to invent. |
-| `n_candidate_batches` | `n_probe_points` | How many random size-`q` index-combinations of that pool the server scores with joint q-EI. Independent of `n_probe_points` — pass both explicitly to decouple them. |
+| `n_candidate_batches` | `n_probe_points` | Server's `n_batches`: how many size-`q` index-combinations of that pool reach the joint q-EI stage (see [Server-side tuning](#server-side-tuning)). Independent of `n_probe_points` — pass both explicitly to decouple them. |
 | `train_steps`         | `60`             | Adam steps for GP kernel optimisation. |
 | `lr`                  | `0.1`            | Adam learning rate. |
 | `xi`                  | `0.01`           | EI exploration bonus. |
 | `mode`                | `"production"`   | `"debug"` returns full posterior arrays. |
 | `seed`                | `None`           | Random seed for the invented candidate pool. |
 | `timeout`             | `120.0`          | HTTP timeout in seconds. |
+| `**tuning`            |                  | Any [server-side tuning](#server-side-tuning) field, forwarded verbatim. |
 
 ### `call_modal_api`
 
 ```python
-call_modal_api(api_url, X, y, candidates, q=2, n_batches=512, train_steps=100,
-                lr=0.1, xi=0.01, mode="production", timeout=120.0)
+call_modal_api(api_url, X, y, candidates, q=2, n_batches=512, train_steps=60,
+                lr=0.1, xi=0.01, mode="production", timeout=120.0, **tuning)
 ```
 
 The raw Modal HTTP client `modal_suggest` is built on — and the function to call directly whenever you have a real, materialized set of candidates (an embedded product catalog, an ad pool, any finite list you can turn into vectors). No `DimSpec`, no `BatchSampler`, no invented points: `candidates` is exactly the array you pass, and each returned `index` is a real index into it.
@@ -164,16 +165,93 @@ for p in picks:
 | `y`           | *(required)*   | Observed scores, higher = better. Negate first for minimisation. |
 | `candidates`  | *(required)*   | Discrete candidate pool to select from, shape `(n_cands, n_dims)` — your real items. |
 | `q`           | `2`            | Number of candidates to return. |
-| `n_batches`   | `512`          | Random size-`q` index-combinations of `candidates` scored with joint q-EI before the best one is returned. |
-| `train_steps` | `100`          | Adam steps for GP kernel optimisation. |
+| `n_batches`   | `512`          | Size-`q` index-combinations of `candidates` scored with joint q-EI before the best one is returned — the survivors of the server's prefilter (see [Server-side tuning](#server-side-tuning)). |
+| `train_steps` | `60`           | Adam steps for GP kernel optimisation. |
 | `lr`          | `0.1`          | Adam learning rate. |
 | `xi`          | `0.01`         | EI exploration bonus. |
 | `mode`        | `"production"` | `"debug"` returns full posterior arrays. |
 | `timeout`     | `120.0`        | HTTP timeout in seconds. |
+| `**tuning`    |                | Any [server-side tuning](#server-side-tuning) field, forwarded verbatim. |
 
 Returns `list[dict]`, each with `index` (int, into `candidates`), `x` (the candidate vector), `mu` (GP posterior mean), `sigma` (GP posterior std).
 
 See `demos/demo9.py`'s `run_arm_qei` for a worked ask-tell loop built directly on this function, with no Optuna/`BatchSampler` involved at all.
+
+#### Rules for `X` / `y` / `candidates`
+
+1. `X` and `candidates` must be in the **same coordinate space** (same columns,
+   same meaning). Any numeric embedding works; the service rescales internally.
+2. `y` is maximised. For a loss / error / cost, **negate it** before sending.
+3. `y` needs no scaling or transform of any kind. Send raw values; the server
+   rank-transforms.
+4. `candidates` is the complete menu: the response only ever contains members
+   of it. Include already-evaluated points only if re-evaluating them is
+   acceptable.
+5. Around 5 rows of `X` is the practical minimum for useful suggestions; fewer
+   is allowed.
+
+One call per round, not one per candidate. Nothing is stored server-side; every
+request is self-contained.
+
+#### Preprocessing: reduce the dimensionality first
+
+The service fits a model with **one lengthscale per column** of `X`. It needs
+many more rows than columns to learn them. Sending 256- or 1536-dim embeddings
+with 20 evaluated rows is under-determined and gives poor suggestions —
+measured, not theoretical: raw 1536-dim embeddings hit the curse of
+dimensionality in calibration runs.
+
+So: project client-side before the call, and send the projected vectors.
+
+- Fit PCA on the **pooled** rows — evaluated points and candidates together —
+  and project both with the same fit. Refit every call; the basis should follow
+  the current pool. Keep the full embeddings in your own storage.
+- Pick `k` from your row count, not from the embedding size. With ~20 evaluated
+  rows use **8–16 components**; go higher only as rows accumulate. PCA cannot
+  return more components than pooled rows anyway.
+- Existing consumers use `k = 64` (text+image) / `32` (text-only) with hundreds
+  of rows; that is a rule of thumb, never swept.
+- PCA is unsupervised: it keeps the high-variance axes, which are not
+  necessarily the ones that predict `y`. With very few rows a supervised
+  projection (PLS on `y`) may do better. Untested; flagged, not recommended.
+
+```python
+from sklearn.decomposition import PCA
+import numpy as np
+
+pool = np.vstack([X_full, cand_full])                # all rows, full dims
+k = min(16, len(pool))
+pca = PCA(n_components=k, random_state=0).fit(pool)
+X, candidates = pca.transform(X_full), pca.transform(cand_full)
+```
+
+#### Server-side tuning
+
+All `call_modal_api*` functions and `modal_suggest` accept these as extra
+keyword arguments and forward them verbatim. Leave them out unless told
+otherwise — the server defaults apply and the payload never carries a value
+you didn't set. Unknown names raise `TypeError` client-side.
+
+| Field           | Server default | Meaning |
+|-----------------|----------------|---------|
+| `n_prefilter`   | `10000`        | Distinct size-`q` index-batches drawn from the pool (every combination when `C(n_cands, q)` is smaller). |
+| `ei_direct_max` | `40000`        | When `n_sampled × q` exceeds this, every sampled batch is ranked by q-PI first and only the top `n_batches` go on to q-EI. Below it, q-EI scores everything sampled. |
+| `orthant_mode`  | `"auto"`       | Orthant-probability approximation inside q-EI. `"legacy"` is the pre-2026-09 path. |
+| `order`         | `1`            | `"auto"` only: `0` drops the Plackett correction — faster, less accurate. |
+| `gh_nodes`      | `27`           | `"auto"` only: Gauss–Hermite nodes for the main integral. |
+| `gh_nodes_corr` | `5`            | `"auto"` only: nodes for the correction (`order=1`). |
+
+### `call_modal_api_multioutput` / `call_modal_api_composite`
+
+Same contract, for candidates from two related sources that should share one
+model (e.g. two ad platforms). `call_modal_api_multioutput` adds `d_train` /
+`d_cands` (output index `0`/`1` per row) and `rho` (cross-output correlation,
+default `0.5`) to the `X`/`candidates` form. `call_modal_api_composite` is the
+one-row-per-item alternative for text+optional-image inputs: `text`, `image`,
+`has_image` (and `_candidates` counterparts) replace `X`/`candidates`; rows
+without an image send any placeholder vector with `has_image=0`. Both return
+the same `list[dict]` as `call_modal_api`. See the docstrings in
+`quantecarlo/_modal_api.py`.
 
 ### `fantasize_suggest`
 

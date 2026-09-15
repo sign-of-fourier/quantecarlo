@@ -107,9 +107,13 @@ to the Modal API's higher-is-better convention internally. Bind via `functools.p
   omitted, for backward compatibility with callers that only ever set one knob.
 
 **Payload sent**: `{X, y_higher_is_better, candidates, q, n_batches, train_steps, lr, xi, mode}`
-(`n_batches` here is `n_candidate_batches`, or `n_probe_points` if that wasn't set —
-the wire field name matches the server's `GPRequest.n_batches`, unchanged by the
-client-side rename.)
+plus any server-side tuning field passed as a keyword argument (`n_prefilter`,
+`ei_direct_max`, `orthant_mode`, `order`, `gh_nodes`, `gh_nodes_corr` — the set is
+`_modal_api._TUNING_FIELDS`; unknown names raise `TypeError` client-side). `n_batches`
+here is `n_candidate_batches`, or `n_probe_points` if that wasn't set — the wire field
+name matches the server's `GPRequest.n_batches`, unchanged by the client-side rename.
+Since server 2026-09-12 `n_batches` is the number of batches that reach q-EI after the
+MPI prefilter, not the number sampled (`n_prefilter`).
 
 **Response parsed**: `{"candidates": [{"index": int, "x": [...], "mu": float, "sigma": float}, ...]}`
 
@@ -125,11 +129,14 @@ for minimize studies so the GP always works higher-is-better. EI formula is maxi
 ### `_modal_api.py` (`quantecarlo/_modal_api.py`)
 
 ```python
-call_modal_api(api_url, X, y, candidates, q, n_batches, train_steps, lr, xi, mode, timeout)
-call_modal_api_multioutput(api_url, X, y, candidates, d_train, d_cands, rho, q, ...)
+call_modal_api(api_url, X, y, candidates, q, n_batches, train_steps, lr, xi, mode, timeout, **tuning)
+call_modal_api_multioutput(api_url, X, y, candidates, d_train, d_cands, rho, q, ..., **tuning)
 call_modal_api_composite(api_url, text, image, has_image, y, text_candidates,
-                          image_candidates, has_image_candidates, d_train, d_cands, rho, q, ...)
+                          image_candidates, has_image_candidates, d_train, d_cands, rho, q, ..., **tuning)
 ```
+
+All three build their payload through `_common_fields` (validates `**tuning` against
+`_TUNING_FIELDS`) and parse through `_parse` — one copy of each, not three.
 
 All three take numpy arrays, return `list[dict]` with `index`, `x` (np.ndarray), `mu`, `sigma`.
 `call_modal_api_multioutput` adds `d_train`, `d_cands`, `rho` for the cross-platform GP path
@@ -191,8 +198,12 @@ no `sys.path` hack, since `quantecarlo` is `pip install -e`'d there) were update
 Endpoint: `POST https://markshipman4273--bo-gp-service-gp-suggest.modal.run`
 
 Request fields: `X`, `y` (higher = better), `candidates` (actual pool vectors),
-`q`, `n_batches`, `train_steps`, `lr`, `xi`, `mode`.
+`q`, `n_batches`, `train_steps`, `lr`, `xi`, `mode`; optional `n_prefilter`,
+`ei_direct_max`, `orthant_mode`, `order`, `gh_nodes`, `gh_nodes_corr`; multioutput
+`d`, `d_candidates`, `rho`; composite `kernel_mode="composite"` + `text`/`image`/
+`has_image` (+ `_candidates`).
 
 Response: `{"candidates": [{"index": int, "x": [...], "mu": float, "sigma": float}]}`
 
-Full spec: `~/projects/boaz/modal/API.md`
+Full spec: the `GPRequest` model in `~/projects/boaz/modal/modal_gp_api.py` — that
+repo has no markdown docs. This README is the user-facing contract.
