@@ -9,15 +9,16 @@ y convention: higher is better. Callers that use a minimise objective must
 negate y before calling these functions.
 
 Server-side tuning fields (all optional, all server-defaulted):
-    n_batches      index-batches scored with joint q-EI — the survivors of the
-                   MPI prefilter, or everything sampled when it is skipped
-    n_prefilter    distinct size-q index-batches drawn from the pool before
-                   scoring (every combination when C(n_cands, q) is smaller)
-    ei_direct_max  when n_sampled * q exceeds this, batches are ranked by q-PI
-                   first and only the top n_batches go on to q-EI
-    orthant_mode   "auto" (default) or "legacy"
-    order          0 or 1 — Plackett correction on/off in the "auto" path
-    gh_nodes, gh_nodes_corr   Gauss-Hermite node counts in the "auto" path
+    n_batches      how many size-q candidate batches are scored with joint
+                   q-EI before the best one is returned (more = better batch,
+                   slower call)
+    n_prefilter    how many candidate batches are drawn from the pool before
+                   scoring (more = wider search, slower call)
+    ei_direct_max  compute budget above which the server switches to a cheaper
+                   screening pass before full q-EI scoring
+    orthant_mode, order, gh_nodes, gh_nodes_corr
+                   numerical-accuracy settings for the q-EI computation; leave
+                   unset unless instructed
 Any of these can be passed to the call_modal_api* functions as keyword
 arguments; anything else is rejected client-side rather than 422'd by the
 server.
@@ -114,8 +115,7 @@ def call_modal_api(
     y:          observed scores, shape (n_obs,)
     candidates: discrete candidate pool to select from, shape (n_cands, n_dims)
     **tuning:   any of the server-side tuning fields listed in the module
-                docstring (n_prefilter, ei_direct_max, orthant_mode, order,
-                gh_nodes, gh_nodes_corr)
+                docstring
 
     Each returned dict has:
         "index"  — int, index into candidates

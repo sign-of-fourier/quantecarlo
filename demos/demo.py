@@ -2,9 +2,8 @@
 #
 # Usage:
 #   1. Have a GP endpoint URL (the hosted default in modal_suggest works out of the box)
-#   2. pip install -e .   (from repo root)
-#   3. pip install optunahub
-#   4. python demos/demo.py
+#   2. pip install -e ".[optuna]"   (from repo root; pulls optuna + optunahub)
+#   3. python demos/demo.py
 #
 # The ask-tell loop is explicit rather than study.optimize() so the batching
 # contract is visible: q sequential asks fill the cache once, then q parallel
