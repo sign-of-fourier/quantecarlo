@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "quantecarlo"
-version = "0.6.0"
+version = "0.6.1"
 description = "Batch Bayesian optimization (q-EI) backed by a remote GP service — standalone or as an Optuna BatchSampler suggest_fn"
 readme = "README.md"
 requires-python = ">=3.10"

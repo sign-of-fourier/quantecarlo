@@ -3,9 +3,9 @@
 # blind way anyone would reach for Optuna on a fixed pool of discrete items?
 #
 # demo7_categorical_vs_embedding.py (and the rest of the demo7*/demo8 family) answer
-# this using real chi_bad_ads image embeddings and human ad ratings — data that
-# lives in a separate repo (~/projects/chi_bad_ads) and isn't included here. This
-# demo asks the identical question with no external data at all:
+# this using real image embeddings and human ratings — data that lives in a
+# separate repo and isn't included here. This demo asks the identical question
+# with no external data at all:
 #
 #   "Embeddings" — sklearn's bundled digits dataset (load_digits): 1797 8x8
 #   grayscale digit images, each already a 64-dim pixel-intensity vector. A random
@@ -30,7 +30,7 @@
 #
 # Arm B: qEI via call_modal_api directly against the real remaining pool, using
 #   the raw 64-dim pixel vectors as features (no PCA — 64 dims is already small
-#   enough to hand the GP directly; see CLAUDE.md's direct-pool-candidates note).
+#   enough to hand the GP directly; see the README's preprocessing section).
 #   The GP models score as a function of feature position, so an untried item near
 #   a high-scoring one gets a high posterior mean with zero direct observations.
 #

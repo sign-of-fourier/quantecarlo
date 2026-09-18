@@ -74,10 +74,10 @@ Binds the endpoint and per-call defaults once. Construct one and reuse it.
 |---------------|----------------|-------------|
 | `api_url`     | hosted service | GP service endpoint URL. |
 | `timeout`     | `120.0`        | HTTP timeout in seconds. |
-| `train_steps` | `60`           | Server-side GP fitting budget (iterations). More = better fit, slower call. |
-| `lr`          | `0.1`          | Server-side GP fitting step size. |
-| `xi`          | `0.01`         | EI exploration bonus. Larger favours uncertain regions over known-good ones. |
-| `mode`        | `"production"` | `"debug"` returns additional diagnostics. |
+| `train_steps` | `60`           | Server-side GP fitting budget (iterations). More = better fit, slower call. `suggest` only; the multioutput / composite paths ignore it. |
+| `lr`          | `0.1`          | Server-side GP fitting step size. `suggest` only, as above. |
+| `xi`          | `0.01`         | Accepted for compatibility; the service ignores it. |
+| `mode`        | `"production"` | `"debug"` fills `client.last_diagnostics` after each call (see [Debug diagnostics](#debug-diagnostics)). |
 | `**tuning`    |                | Any [server-side tuning](#server-side-tuning) field, forwarded on every call. |
 
 ### `QEIClient.suggest`
@@ -93,7 +93,7 @@ client.suggest(X, y, candidates, q, *, direction="maximize", n_batches=512) -> l
 | `candidates` | *(required)* | The pool to choose from, shape `(n_cands, n_dims)`. |
 | `q`          | *(required)* | How many candidates to return. |
 | `direction`  | `"maximize"` | `"maximize"` or `"minimize"` — which way `y` is better. |
-| `n_batches`  | `512`        | Size-`q` batches scored by joint q-EI before the best is returned. More = better batch, slower call. |
+| `n_batches`  | `512`        | Batches that survive the server's screening pass and are scored by joint q-EI. Only takes effect when the screen runs — `n_prefilter × q > ei_direct_max`, i.e. `q ≥ 5` with the server defaults. Below that every drawn batch is scored and this is ignored. See [Server-side tuning](#server-side-tuning). |
 
 Returns a list of `q` dicts:
 
@@ -101,17 +101,19 @@ Returns a list of `q` dicts:
 |---------|--------------|---------|
 | `index` | `int`        | Index into `candidates`. |
 | `x`     | `np.ndarray` | The selected candidate vector. |
-| `mu`    | `float`      | GP posterior mean at that point (in the higher-is-better convention). |
-| `sigma` | `float`      | GP posterior standard deviation. |
+| `mu`    | `float`      | GP posterior mean at that point. Internal scale, higher-is-better: comparable across candidates within one call, not to your `y`. |
+| `sigma` | `float`      | GP posterior standard deviation, same scale. |
 
-Arrays or plain nested lists are both accepted.
+Arrays or plain nested lists are both accepted. Fewer than `q` dicts come back only
+when `candidates` has fewer than `q` rows.
 
 ### `QEIClient.suggest_multioutput` / `QEIClient.suggest_composite`
 
 Same contract, for candidates from two related sources that should share one model
 (e.g. two ad platforms). `suggest_multioutput(X, y, candidates, d_train, d_cands, q, *,
 rho=0.5, direction, n_batches)` adds `d_train` / `d_cands` (output index `0` or `1` per
-row) and `rho` (cross-output correlation in `(-1, 1)`). `suggest_composite(text, image,
+row — only two outputs are supported) and `rho` (cross-output correlation in `(-1, 1)`).
+`train_steps` / `lr` have no effect on either. `suggest_composite(text, image,
 has_image, y, text_candidates, image_candidates, has_image_candidates, d_train, d_cands,
 q, *, rho, direction, n_batches)` is the one-row-per-item form for text + optional-image
 inputs; rows with `has_image=0` send any placeholder image vector. Both return the same
@@ -159,8 +161,6 @@ So: project client-side before the call, and send the projected vectors.
 - Pick `k` from your row count, not from the embedding size. With ~20 evaluated
   rows use **8–16 components**; go higher only as rows accumulate. PCA cannot
   return more components than pooled rows anyway.
-- Existing consumers use `k = 64` (text+image) / `32` (text-only) with hundreds
-  of rows; that is a rule of thumb, never swept.
 - PCA is unsupervised: it keeps the high-variance axes, which are not
   necessarily the ones that predict `y`. With very few rows a supervised
   projection (PLS on `y`) may do better. Untested; flagged, not recommended.
@@ -182,11 +182,33 @@ keyword arguments and forward them verbatim. Leave them out unless told
 otherwise — the server defaults apply and the payload never carries a value
 you didn't set. Unknown names raise `TypeError` client-side.
 
-| Field           | Meaning |
-|-----------------|---------|
-| `n_prefilter`   | How many size-`q` batches are drawn from the pool before scoring. More = wider search, slower call. |
-| `ei_direct_max` | Compute budget above which the server runs a cheaper screening pass before full q-EI scoring. |
-| `orthant_mode`, `order`, `gh_nodes`, `gh_nodes_corr` | Numerical-accuracy settings for the q-EI computation. Leave unset unless instructed. |
+The server draws `n_prefilter` distinct size-`q` batches from the pool (every
+combination when there are fewer). If `n_prefilter × q ≤ ei_direct_max` it scores
+all of them by joint q-EI. Otherwise it ranks them with a cheaper screen and
+scores only the top `n_batches`. With the defaults the screen kicks in at `q ≥ 5`.
+
+| Field           | Default | Meaning |
+|-----------------|---------|---------|
+| `n_prefilter`   | `10000` | Batches drawn from the pool. This is the width of the search: more = wider, slower. |
+| `ei_direct_max` | `40000` | Work budget in units of `n_prefilter × q`. Above it the screen runs. |
+| `n_batches`     | `512`   | Batches that survive the screen. Ignored when the screen does not run. (Passed positionally, not via `**tuning`.) |
+| `orthant_mode`, `order`, `gh_nodes`, `gh_nodes_corr` | | Numerical-accuracy settings for the q-EI computation. Leave unset unless instructed. |
+
+### Debug diagnostics
+
+With `mode="debug"` the response carries extra keys alongside the picks. `QEIClient`
+stores them in `client.last_diagnostics` after every call; the `call_modal_api*`
+functions fill a dict you pass as `diagnostics=`. They are for inspection, not
+for the loop: posterior `mu`/`sigma` for every candidate, the winning batch's
+score, the score of every batch that reached q-EI, wall-clock per stage, and the
+screening pass's statistics when it ran. Key names follow the service's response
+and may change.
+
+```python
+client = QEIClient(mode="debug")
+picks = client.suggest(X, y, candidates, q=4)
+print(client.last_diagnostics["timing_s"])
+```
 
 ---
 
@@ -306,11 +328,11 @@ Only use this for a genuinely continuous `search_space`. If you have a real enum
 | `direction`           | `"minimize"`     | Must match the Optuna study direction. |
 | `api_url`             | *(hosted)*       | Modal GP endpoint URL. |
 | `n_probe_points`      | `512`            | Random continuous points invented per call and sent as the GP's candidate pool. Meaningless once you're calling `QEIClient` with real points — there's nothing left to invent. |
-| `n_candidate_batches` | `n_probe_points` | Server's `n_batches`: how many size-`q` index-combinations of that pool reach the joint q-EI stage (see [Server-side tuning](#server-side-tuning)). Independent of `n_probe_points` — pass both explicitly to decouple them. |
+| `n_candidate_batches` | `n_probe_points` | Server's `n_batches`: batches that survive the screening pass and reach joint q-EI. Ignored unless the screen runs (see [Server-side tuning](#server-side-tuning)). Independent of `n_probe_points` — pass both explicitly to decouple them. |
 | `train_steps`         | `60`             | Server-side GP fitting budget (iterations). |
 | `lr`                  | `0.1`            | Server-side GP fitting step size. |
-| `xi`                  | `0.01`           | EI exploration bonus. |
-| `mode`                | `"production"`   | `"debug"` returns additional diagnostics. |
+| `xi`                  | `0.01`           | Accepted for compatibility; the service ignores it. |
+| `mode`                | `"production"`   | `"debug"` — diagnostics are discarded on this path; use `QEIClient` or `call_modal_api(diagnostics=...)` to receive them. |
 | `seed`                | `None`           | Random seed for the invented candidate pool. |
 | `timeout`             | `120.0`          | HTTP timeout in seconds. |
 | `**tuning`            |                  | Any [server-side tuning](#server-side-tuning) field, forwarded verbatim. |
@@ -338,12 +360,13 @@ In-process RBF GP with sequential kriging (fantasization). Picks one candidate p
 
 ```python
 call_modal_api(api_url, X, y, candidates, q=2, n_batches=512, train_steps=60,
-               lr=0.1, xi=0.01, mode="production", timeout=120.0, **tuning)
+               lr=0.1, xi=0.01, mode="production", timeout=120.0, diagnostics=None, **tuning)
 ```
 
 The raw HTTP function everything above is built on. Same arguments and return value as
-`QEIClient.suggest`, except `y` must already be higher-is-better (no `direction`) and
-inputs must be numpy arrays. `call_modal_api_multioutput` and `call_modal_api_composite`
+`QEIClient.suggest`, except `y` must already be higher-is-better (no `direction`),
+inputs must be numpy arrays, and debug output goes into a dict you pass as
+`diagnostics=`. `call_modal_api_multioutput` and `call_modal_api_composite`
 correspond to the `QEIClient` methods of the same names. Prefer `QEIClient` unless you
 need a plain function.
 

@@ -57,13 +57,16 @@ class QEIClient:
 
     api_url:     GP service endpoint.
     timeout:     HTTP timeout in seconds.
-    train_steps: server-side GP fitting budget (iterations).
-    lr:          server-side GP fitting step size.
-    xi:          EI exploration bonus — larger favours uncertain regions.
-    mode:        "production" (default) or "debug".
+    train_steps: server-side GP fitting budget (iterations). suggest() only;
+                 suggest_multioutput / suggest_composite ignore it.
+    lr:          server-side GP fitting step size. suggest() only, as above.
+    xi:          accepted for compatibility; the service ignores it.
+    mode:        "production" (default) or "debug". In debug mode every call
+                 fills `self.last_diagnostics` with the response's extra keys.
     **tuning:    server-side tuning fields (n_prefilter, ei_direct_max,
                  orthant_mode, order, gh_nodes, gh_nodes_corr). Forwarded
                  verbatim on every call; unknown names raise TypeError.
+                 See quantecarlo._modal_api for what each one does.
     """
 
     def __init__(
@@ -84,11 +87,13 @@ class QEIClient:
         self.xi = xi
         self.mode = mode
         self.tuning = tuning
+        self.last_diagnostics: dict[str, Any] = {}
 
     def _kw(self, n_batches: int) -> dict[str, Any]:
         return dict(
             n_batches=n_batches, train_steps=self.train_steps, lr=self.lr,
-            xi=self.xi, mode=self.mode, timeout=self.timeout, **self.tuning,
+            xi=self.xi, mode=self.mode, timeout=self.timeout,
+            diagnostics=self.last_diagnostics, **self.tuning,
         )
 
     def suggest(
@@ -108,11 +113,16 @@ class QEIClient:
         candidates: the pool to choose from, shape (n_cands, n_dims).
         q:          number of points to return.
         direction:  "maximize" (default) or "minimize" — which way y is better.
-        n_batches:  size-q batches scored by joint q-EI before the best is
-                    returned. More = better batch, slower call.
+        n_batches:  how many batches survive the server's screening pass and
+                    are scored by joint q-EI. The screen only runs when
+                    n_prefilter * q > ei_direct_max (q >= 5 with the server
+                    defaults); below that every drawn batch is scored and
+                    this is ignored. The width of the search is n_prefilter.
 
         Returns a list of q dicts: "index" (int, into candidates), "x" (the
-        candidate vector), "mu" and "sigma" (GP posterior mean / std).
+        candidate vector), "mu" and "sigma" (GP posterior mean / std, on an
+        internal scale -- comparable across candidates in one call, not to
+        y). Fewer than q only when candidates has fewer than q rows.
         """
         return call_modal_api(
             self.api_url,
@@ -138,8 +148,9 @@ class QEIClient:
         """suggest() for candidates from two related sources sharing one model.
 
         d_train / d_cands: int array, output index (0 or 1) per row of X / candidates.
+                           Only two outputs are supported.
         rho:               correlation between the two outputs, in (-1, 1).
-        Everything else as suggest().
+        Everything else as suggest(), except train_steps / lr have no effect here.
         """
         return call_modal_api_multioutput(
             self.api_url,

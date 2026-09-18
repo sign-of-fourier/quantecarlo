@@ -67,6 +67,22 @@ class TestSuggest:
         assert isinstance(picks[0]["x"], np.ndarray)
         assert cap["timeout"] == 7.0
 
+    def test_debug_diagnostics_captured(self):
+        body = {"candidates": FAKE, "timing_s": {"fit": 0.1}, "ei_all": [0.5, 0.4], "prefilter": None}
+        client = QEIClient("http://x", mode="debug")
+        with patch("quantecarlo._modal_api._post", return_value=body):
+            picks = client.suggest(X, Y, CANDS, q=2)
+        assert [p["index"] for p in picks] == [1, 2]
+        # None-valued keys (diagnostics the server did not produce) are dropped
+        assert client.last_diagnostics == {"timing_s": {"fit": 0.1}, "ei_all": [0.5, 0.4]}
+
+    def test_production_diagnostics_empty(self):
+        fake, cap = _mock_urlopen(FAKE)
+        with patch("quantecarlo._modal_api.urllib.request.urlopen", fake):
+            client = QEIClient("http://x")
+            client.suggest(X, Y, CANDS, q=2)
+        assert client.last_diagnostics == {}
+
     def test_multioutput_sends_d_and_rho(self):
         fake, cap = _mock_urlopen(FAKE)
         with patch("quantecarlo._modal_api.urllib.request.urlopen", fake):

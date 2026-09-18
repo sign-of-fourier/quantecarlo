@@ -65,14 +65,19 @@ def modal_suggest(
                             the GP can choose from. Meaningless once you're passing
                             call_modal_api real points directly — there is nothing
                             to invent when the real, finite set is already known.
-      n_candidate_batches — how many random size-q index-combinations of that pool
-                            the server scores with joint q-EI before returning the
-                            best one (the wire field n_batches; same knob,
-                            renamed here to not collide with "batch"
-                            meaning a q-sized round of picks elsewhere in a caller's
-                            ask-tell loop). Defaults to n_probe_points for backward
-                            compatibility with callers that only ever set one knob;
-                            pass both explicitly to decouple them.
+      n_candidate_batches — the wire field n_batches (renamed here so "batch"
+                            doesn't also mean a q-sized round of picks in a
+                            caller's ask-tell loop): how many size-q batches survive
+                            the server's screening pass and are scored by joint
+                            q-EI. The screen only runs when n_prefilter * q >
+                            ei_direct_max (q >= 5 with the server defaults); below
+                            that every drawn batch is scored and this is ignored.
+                            The width of the search is n_prefilter, not this.
+                            Defaults to n_probe_points for backward compatibility
+                            with callers that only ever set one knob.
+
+    train_steps / lr are the server-side GP fitting budget and step size. xi is
+    accepted for compatibility and ignored by the service.
 
     Any further keyword arguments are server-side tuning fields forwarded
     verbatim by call_modal_api; see quantecarlo._modal_api for the accepted set.
