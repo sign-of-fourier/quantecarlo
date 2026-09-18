@@ -65,8 +65,8 @@ def modal_suggest(
                             to invent when the real, finite set is already known.
       n_candidate_batches — how many random size-q index-combinations of that pool
                             the server scores with joint q-EI before returning the
-                            best one (see GPRequest.n_batches in modal_gp_api.py;
-                            same knob, renamed here to not collide with "batch"
+                            best one (the wire field n_batches; same knob,
+                            renamed here to not collide with "batch"
                             meaning a q-sized round of picks elsewhere in a caller's
                             ask-tell loop). Defaults to n_probe_points for backward
                             compatibility with callers that only ever set one knob;

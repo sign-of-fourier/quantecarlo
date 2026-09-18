@@ -1,7 +1,7 @@
 # demo.py — ask-tell tutorial for BatchSampler + modal_suggest
 #
 # Usage:
-#   1. Deploy the GP service (see ~/projects/boaz/modal — modal deploy modal_gp_api.py)
+#   1. Have a GP endpoint URL (the hosted default in modal_suggest works out of the box)
 #   2. pip install -e .   (from repo root)
 #   3. pip install optunahub
 #   4. python demos/demo.py
