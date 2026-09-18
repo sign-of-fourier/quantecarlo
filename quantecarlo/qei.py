@@ -24,9 +24,17 @@ Continuous search space with no enumerable pool? Invent one:
     cands = sample_candidates([DimSpec("lr", "float", 1e-4, 1e-1, log=True)], n=512)
     picks = client.suggest(X, y, cands, q=4)
 
+Already have a surrogate of your own? Skip the fit and use only the batch
+selection -- send the posterior instead of the data:
+
+    mu, cov = my_gp.predict(candidates, return_cov=True)
+    picks = client.select(mu, cov, best_y=my_incumbent, q=4)
+    picks["indices"]                # q indices into candidates
+
 Every method is a thin pass-through to the call_modal_api* functions in
-quantecarlo._modal_api, which remain the single source of truth for the
-wire contract.
+quantecarlo._modal_api (suggest*) or call_select_api in
+quantecarlo._select_api (select), which remain the single source of truth
+for the wire contract.
 """
 from __future__ import annotations
 
@@ -35,12 +43,16 @@ from typing import Any
 import numpy as np
 
 from quantecarlo._modal_api import (
+    _TUNING_FIELDS,
     call_modal_api,
     call_modal_api_composite,
     call_modal_api_multioutput,
 )
+from quantecarlo._select_api import _SELECT_TUNING_FIELDS, call_select_api
 
 from quantecarlo.bo_sampler import DEFAULT_API_URL
+
+DEFAULT_SELECT_URL = "https://info-29741--bo-gp-service-qei-select.modal.run"
 
 
 def _as_higher_is_better(y, direction: str) -> np.ndarray:
@@ -55,7 +67,8 @@ def _as_higher_is_better(y, direction: str) -> np.ndarray:
 class QEIClient:
     """Bind the endpoint and per-call defaults once; call suggest() in your loop.
 
-    api_url:     GP service endpoint.
+    api_url:     GP service endpoint (suggest, suggest_multioutput, suggest_composite).
+    select_url:  acquisition-only endpoint (select).
     timeout:     HTTP timeout in seconds.
     train_steps: server-side GP fitting budget (iterations). suggest() only;
                  suggest_multioutput / suggest_composite ignore it.
@@ -63,29 +76,44 @@ class QEIClient:
     xi:          accepted for compatibility; the service ignores it.
     mode:        "production" (default) or "debug". In debug mode every call
                  fills `self.last_diagnostics` with the response's extra keys.
-    **tuning:    server-side tuning fields (n_prefilter, ei_direct_max,
-                 orthant_mode, order, gh_nodes, gh_nodes_corr). Forwarded
-                 verbatim on every call; unknown names raise TypeError.
-                 See quantecarlo._modal_api for what each one does.
+    dtype:       float width select() packs the posterior in, "float64"
+                 (default) or "float32". See quantecarlo._select_api for why
+                 the default is float64 and when to switch.
+    **tuning:    server-side tuning fields, forwarded verbatim on every call
+                 they apply to; unknown names raise TypeError. suggest* take
+                 n_prefilter, ei_direct_max; select takes ei_budget,
+                 mpi_bytes, pi_floor, seed; orthant_mode, order, gh_nodes,
+                 gh_nodes_corr go to both. See quantecarlo._modal_api and
+                 quantecarlo._select_api for what each one does.
     """
 
     def __init__(
         self,
         api_url: str = DEFAULT_API_URL,
         *,
+        select_url: str = DEFAULT_SELECT_URL,
         timeout: float = 120.0,
         train_steps: int = 60,
         lr: float = 0.1,
         xi: float = 0.01,
         mode: str = "production",
+        dtype: str = "float64",
         **tuning: Any,
     ):
         self.api_url = api_url
+        self.select_url = select_url
         self.timeout = timeout
         self.train_steps = train_steps
         self.lr = lr
         self.xi = xi
         self.mode = mode
+        self.dtype = dtype
+        unknown = set(tuning) - (_TUNING_FIELDS | _SELECT_TUNING_FIELDS)
+        if unknown:
+            raise TypeError(
+                f"unknown tuning field(s) {sorted(unknown)}; accepted: "
+                f"{sorted(_TUNING_FIELDS | _SELECT_TUNING_FIELDS)}"
+            )
         self.tuning = tuning
         self.last_diagnostics: dict[str, Any] = {}
 
@@ -93,7 +121,43 @@ class QEIClient:
         return dict(
             n_batches=n_batches, train_steps=self.train_steps, lr=self.lr,
             xi=self.xi, mode=self.mode, timeout=self.timeout,
-            diagnostics=self.last_diagnostics, **self.tuning,
+            diagnostics=self.last_diagnostics,
+            **{k: v for k, v in self.tuning.items() if k in _TUNING_FIELDS},
+        )
+
+    def select(
+        self,
+        mu,
+        cov,
+        best_y: float,
+        q: int,
+        *,
+        dtype: str | None = None,
+        **tuning: Any,
+    ) -> dict[str, Any]:
+        """Pick q candidates by joint q-EI from a posterior you computed.
+
+        mu:      posterior mean at each candidate, shape (n,). Higher = better.
+        cov:     posterior covariance over the candidates, shape (n, n).
+        best_y:  the incumbent, on mu's scale. Your rule; the service only
+                 compares mu against it.
+        q:       how many to pick.
+        dtype:   overrides the client's dtype for this call.
+        **tuning: per-call select fields (ei_budget, mpi_bytes, pi_floor,
+                 seed, orthant_*); override the client-level ones.
+
+        Returns a dict: "indices" (q ints into mu), "qei", "regime" ("exact"
+        | "screen" | "sample"), "n_cands", "n_sampled", "n_batches". Fewer
+        than q indices only when mu has fewer than q entries. In debug mode
+        `self.last_diagnostics` is filled as for suggest().
+        """
+        fields = {k: v for k, v in self.tuning.items() if k in _SELECT_TUNING_FIELDS}
+        fields.update(tuning)
+        return call_select_api(
+            self.select_url, np.asarray(mu, dtype=np.float64), np.asarray(cov, dtype=np.float64),
+            best_y, q=q, dtype=self.dtype if dtype is None else dtype,
+            mode=self.mode, timeout=self.timeout, diagnostics=self.last_diagnostics,
+            **fields,
         )
 
     def suggest(

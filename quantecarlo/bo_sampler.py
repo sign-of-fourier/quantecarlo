@@ -8,7 +8,7 @@ import numpy as np
 
 from quantecarlo._modal_api import call_modal_api
 
-DEFAULT_API_URL = "https://markshipman4273--bo-gp-service-gp-suggest.modal.run"
+DEFAULT_API_URL = "https://info-29741--bo-gp-service-gp-suggest.modal.run"
 
 
 @dataclass

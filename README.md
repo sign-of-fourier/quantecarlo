@@ -64,21 +64,23 @@ picks = client.suggest(X, y, cands, q=4, direction="minimize")
 ### `QEIClient`
 
 ```python
-QEIClient(api_url=DEFAULT_API_URL, *, timeout=120.0, train_steps=60, lr=0.1,
-          xi=0.01, mode="production", **tuning)
+QEIClient(api_url=DEFAULT_API_URL, *, select_url=DEFAULT_SELECT_URL, timeout=120.0,
+          train_steps=60, lr=0.1, xi=0.01, mode="production", dtype="float64", **tuning)
 ```
 
 Binds the endpoint and per-call defaults once. Construct one and reuse it.
 
 | Parameter     | Default        | Description |
 |---------------|----------------|-------------|
-| `api_url`     | hosted service | GP service endpoint URL. |
+| `api_url`     | hosted service | GP service endpoint URL (`suggest*`). |
+| `select_url`  | hosted service | Acquisition-only endpoint URL (`select`). |
 | `timeout`     | `120.0`        | HTTP timeout in seconds. |
 | `train_steps` | `60`           | Server-side GP fitting budget (iterations). More = better fit, slower call. `suggest` only; the multioutput / composite paths ignore it. |
 | `lr`          | `0.1`          | Server-side GP fitting step size. `suggest` only, as above. |
 | `xi`          | `0.01`         | Accepted for compatibility; the service ignores it. |
 | `mode`        | `"production"` | `"debug"` fills `client.last_diagnostics` after each call (see [Debug diagnostics](#debug-diagnostics)). |
-| `**tuning`    |                | Any [server-side tuning](#server-side-tuning) field, forwarded on every call. |
+| `dtype`       | `"float64"`    | Float width `select` sends the posterior in. See [`QEIClient.select`](#qeiclientselect) for when to use `"float32"`. |
+| `**tuning`    |                | Any [server-side tuning](#server-side-tuning) field, forwarded on every call it applies to. |
 
 ### `QEIClient.suggest`
 
@@ -118,6 +120,60 @@ has_image, y, text_candidates, image_candidates, has_image_candidates, d_train, 
 q, *, rho, direction, n_batches)` is the one-row-per-item form for text + optional-image
 inputs; rows with `has_image=0` send any placeholder image vector. Both return the same
 `list[dict]` as `suggest`.
+
+### `QEIClient.select`
+
+```python
+client.select(mu, cov, best_y, q, *, dtype=None, **tuning) -> dict
+```
+
+You already have a surrogate — your own GP, with its own noise model, transforms,
+incumbent rule, and diagnostics — and only want the batch selection. Send the
+posterior over your candidates instead of the data; nothing else leaves the machine.
+
+| Argument | Description |
+|----------|-------------|
+| `mu`     | Posterior mean at each candidate, shape `(n,)`. Higher = better. |
+| `cov`    | Posterior covariance over the candidates, shape `(n, n)`. Full matrix; the client sends the lower triangle. |
+| `best_y` | The incumbent, on `mu`'s scale. Your rule — max observed, best posterior mean at the training inputs, whatever you use for q = 1. |
+| `q`      | How many to pick. |
+| `dtype`  | Per-call override of the client's `dtype`. |
+
+Returns a dict: `indices` (q ints into `mu`, the batch with the highest joint q-EI),
+`qei` (its score), `regime` (`"exact"`, `"screen"` or `"sample"` — how much of the
+search was exhaustive, see below), `n_cands`, `n_sampled`, `n_batches`.
+
+```python
+mu, cov = my_gp.predict(pool[remaining], return_cov=True)
+picks = client.select(mu, cov, best_y=my_incumbent, q=4)
+chosen = [remaining[i] for i in picks["indices"]]
+```
+
+If `q == 1` you do not need this: the argmax of single-point EI over `mu`/`cov`'s
+diagonal is the same answer. The service earns its call when `q > 1` and the pool is
+large enough that sibling candidates — near-identical vectors with near-identical
+`mu` — would all rank together under independent EI.
+
+**`dtype`.** The posterior is sent in `float64` by default because that is what your
+GP produced, and the wire is not where precision should be decided. The covariance is
+the payload, though: at `n = 5000` the triangle is 100 MB in `float64`, and a dense
+posterior compresses poorly. Above ~1000 candidates the client logs a reminder; pass
+`dtype="float32"` (per call or on the client) to halve it. It is a 2×, not a fix — if
+the payload is still a problem, shrink the pool with `pi_floor` rather than the floats.
+
+**Regimes.** The service decides how exhaustive the search is from `n` and `q`:
+
+| `regime`   | What ran |
+|------------|----------|
+| `"exact"`  | Every size-`q` subset was scored by joint q-EI. |
+| `"screen"` | Every subset was ranked by a cheaper screen; the top `ei_budget // q` were scored by q-EI. |
+| `"sample"` | As many subsets as `mpi_bytes` allows were drawn, screened, and the top `ei_budget // q` scored. |
+
+`select` takes its own tuning fields — `ei_budget`, `mpi_bytes`, `pi_floor`, `seed` —
+listed under [Server-side tuning](#server-side-tuning). `pi_floor` is the one worth
+knowing: it drops candidates whose single-point chance of beating `best_y` is below
+the floor *before* subsets are formed, which is what moves a large pool from
+`"sample"` to `"screen"` or `"exact"`. `seed` makes `"sample"` reproducible.
 
 ### `sample_candidates`
 
@@ -193,6 +249,19 @@ scores only the top `n_batches`. With the defaults the screen kicks in at `q ≥
 | `ei_direct_max` | `40000` | Work budget in units of `n_prefilter × q`. Above it the screen runs. |
 | `n_batches`     | `512`   | Batches that survive the screen. Ignored when the screen does not run. (Passed positionally, not via `**tuning`.) |
 | `orthant_mode`, `order`, `gh_nodes`, `gh_nodes_corr` | | Numerical-accuracy settings for the q-EI computation. Leave unset unless instructed. |
+
+`QEIClient.select` / `call_select_api` do not take the three above — the service
+derives the search geometry from `n` and `q` — and take these instead:
+
+| Field        | Default   | Meaning |
+|--------------|-----------|---------|
+| `ei_budget`  | `40000`   | Work the joint q-EI stage may spend; it scores `ei_budget // q` subsets. |
+| `mpi_bytes`  | `536870912` (512 MB) | Memory the cheaper screen may use; it screens `mpi_bytes // (8 q²)` subsets (~1M at `q = 8`, 65K at `q = 32`). |
+| `pi_floor`   | off       | Drop candidates whose single-point probability of beating `best_y` is below this, before subsets are formed. |
+| `seed`       | off       | Makes the `"sample"` regime reproducible. |
+
+`orthant_mode`, `order`, `gh_nodes`, `gh_nodes_corr` apply to both. A `QEIClient`
+constructed with a mix forwards each field only to the calls it applies to.
 
 ### Debug diagnostics
 
@@ -356,7 +425,7 @@ In-process RBF GP with sequential kriging (fantasization). Picks one candidate p
 
 ---
 
-### Low-level: `call_modal_api`
+### Low-level: `call_modal_api`, `call_select_api`
 
 ```python
 call_modal_api(api_url, X, y, candidates, q=2, n_batches=512, train_steps=60,
@@ -369,6 +438,14 @@ inputs must be numpy arrays, and debug output goes into a dict you pass as
 `diagnostics=`. `call_modal_api_multioutput` and `call_modal_api_composite`
 correspond to the `QEIClient` methods of the same names. Prefer `QEIClient` unless you
 need a plain function.
+
+```python
+call_select_api(api_url, mu, cov, best_y, q=2, *, dtype="float64", mode="production",
+                timeout=120.0, diagnostics=None, **tuning)
+```
+
+The plain-function form of `QEIClient.select`; `api_url` here is the acquisition-only
+endpoint (`DEFAULT_SELECT_URL`).
 
 ---
 

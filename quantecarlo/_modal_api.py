@@ -66,10 +66,13 @@ def _post(api_url: str, payload: dict, timeout: float) -> dict:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise urllib.error.HTTPError(
-            exc.url, exc.code, f"{exc.reason} — {detail}", exc.headers, None
-        ) from None
+        raise _http_error(exc) from None
+
+
+def _http_error(exc: urllib.error.HTTPError) -> urllib.error.HTTPError:
+    """Re-raise with the server's error body in the message (shared with _select_api)."""
+    detail = exc.read().decode("utf-8", errors="replace")
+    return urllib.error.HTTPError(exc.url, exc.code, f"{exc.reason} — {detail}", exc.headers, None)
 
 
 def _common_fields(q, n_batches, train_steps, lr, xi, mode, tuning: dict) -> dict:
