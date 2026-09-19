@@ -91,7 +91,7 @@ client.suggest(X, y, candidates, q, *, direction="maximize", n_batches=512) -> l
 | Parameter    | Default      | Description |
 |--------------|--------------|-------------|
 | `X`          | *(required)* | Points you have evaluated, shape `(n_obs, n_dims)`. Same columns as `candidates`. |
-| `y`          | *(required)* | Their scores, shape `(n_obs,)`. Raw values — no scaling or transform needed. |
+| `y`          | *(required)* | Their scores, shape `(n_obs,)`. Raw values — the service rank-normalises them before the fit (see [What q-EI scores](#what-q-ei-scores)). |
 | `candidates` | *(required)* | The pool to choose from, shape `(n_cands, n_dims)`. |
 | `q`          | *(required)* | How many candidates to return. |
 | `direction`  | `"maximize"` | `"maximize"` or `"minimize"` — which way `y` is better. |
@@ -131,21 +131,34 @@ You already have a surrogate — your own GP, with its own noise model, transfor
 incumbent rule, and diagnostics — and only want the batch selection. Send the
 posterior over your candidates instead of the data; nothing else leaves the machine.
 
+One requirement travels with it: the posterior must be on a **normal scale**.
+The service scores improvement on `exp` of what you send (see
+[What q-EI scores](#what-q-ei-scores)), which is the right criterion when the
+marginals of `mu`/`cov` are ~N(0, 1) — a rank-normal or PIT target, or the log of
+a lognormal objective. `suggest` does this for you by fitting on
+`quantecarlo.rank_normal(y)`; do the same before fitting your own GP unless your
+target is already on such a scale, and pass `best_y` on it too.
+
 | Argument | Description |
 |----------|-------------|
 | `mu`     | Posterior mean at each candidate, shape `(n,)`. Higher = better. |
 | `cov`    | Posterior covariance over the candidates, shape `(n, n)`. Full matrix; the client sends the lower triangle. |
-| `best_y` | The incumbent, on `mu`'s scale. Your rule — max observed, best posterior mean at the training inputs, whatever you use for q = 1. |
+| `best_y` | The incumbent, on `mu`'s scale. Your rule — max observed, best posterior mean at the training inputs, whatever you use for q = 1. `|best_y| > 5` is not a normal-scale value and comes back with a warning (logged, and in `warnings`). |
 | `q`      | How many to pick. |
 | `dtype`  | Per-call override of the client's `dtype`. |
 
 Returns a dict: `indices` (q ints into `mu`, the batch with the highest joint q-EI),
 `qei` (its score), `regime` (`"exact"`, `"screen"` or `"sample"` — how much of the
-search was exhaustive, see below), `n_cands`, `n_sampled`, `n_batches`.
+search was exhaustive, see below), `n_cands`, `n_sampled`, `n_batches`, `warnings`
+(list of strings, or `None`).
 
 ```python
+from quantecarlo import rank_normal
+
+f = rank_normal(y)                                   # N(0, 1) marginals, ranks of y kept
+my_gp.fit(X, f)
 mu, cov = my_gp.predict(pool[remaining], return_cov=True)
-picks = client.select(mu, cov, best_y=my_incumbent, q=4)
+picks = client.select(mu, cov, best_y=f.max(), q=4)
 chosen = [remaining[i] for i in picks["indices"]]
 ```
 
@@ -191,7 +204,9 @@ integers). For continuous search spaces only — if you have a real pool, pass t
 2. Higher `y` is better by default. For a loss / error / cost, pass
    `direction="minimize"` (`QEIClient`, `modal_suggest`) or negate `y` yourself
    (`call_modal_api`).
-3. `y` needs no scaling or transform of any kind. Send raw values.
+3. `y` needs no scaling or transform of any kind. Send raw values; the
+   service replaces them by their normal scores (`quantecarlo.rank_normal`)
+   before fitting, so only the ordering of `y` matters.
 4. `candidates` is the complete menu: the response only ever contains members
    of it. Include already-evaluated points only if re-evaluating them is
    acceptable.
@@ -249,6 +264,7 @@ scores only the top `n_batches`. With the defaults the screen kicks in at `q ≥
 | `ei_direct_max` | `40000` | Work budget in units of `n_prefilter × q`. Above it the screen runs. |
 | `n_batches`     | `512`   | Batches that survive the screen. Ignored when the screen does not run. (Passed positionally, not via `**tuning`.) |
 | `orthant_mode`, `order`, `gh_nodes`, `gh_nodes_corr` | | Numerical-accuracy settings for the q-EI computation. Leave unset unless instructed. |
+| `dup_corr`      | `0.01`  | Candidates whose posterior correlation is `>= 1 - dup_corr` are treated as the same point within a batch. A singular covariance (exact duplicates, correlation 1) is valid input. |
 
 `QEIClient.select` / `call_select_api` do not take the three above — the service
 derives the search geometry from `n` and `q` — and take these instead:
@@ -260,7 +276,7 @@ derives the search geometry from `n` and `q` — and take these instead:
 | `pi_floor`   | off       | Drop candidates whose single-point probability of beating `best_y` is below this, before subsets are formed. |
 | `seed`       | off       | Makes the `"sample"` regime reproducible. |
 
-`orthant_mode`, `order`, `gh_nodes`, `gh_nodes_corr` apply to both. A `QEIClient`
+`orthant_mode`, `order`, `gh_nodes`, `gh_nodes_corr`, `dup_corr` apply to both. A `QEIClient`
 constructed with a mix forwards each field only to the calls it applies to.
 
 ### Debug diagnostics
@@ -454,5 +470,20 @@ endpoint (`DEFAULT_SELECT_URL`).
 Running `study.optimize(n_jobs=q)` with a standard sampler (TPE, random) parallelises evaluation but each worker samples **independently** — it has no visibility into what the other `q-1` workers are about to try. Candidates often cluster near the same local optimum.
 
 **q-EI scores the whole batch jointly.** It computes the expected improvement of the *best point in the batch* over the current best, accounting for the full joint posterior covariance across all `q` candidates. The algorithm naturally diversifies: a second candidate near an already-selected point contributes little to the joint maximum, so the batch spreads across promising but distinct regions.
+
+### What q-EI scores
+
+The objective the service optimises is lognormal. `suggest` maps `y` to its normal
+scores `f = rank_normal(y)` (N(0, 1) marginals; only the order of `y` survives), fits
+the GP on `f`, and scores a batch by the expected improvement of `exp(f)` — the
+lognormal score — over `exp(best_f)`:
+
+    q-EI(batch) = E[ (max_a exp(f_a) − exp(best_f))⁺ ]
+
+Improvement is measured on `exp(f)`, not on `f`, so relative to plain EI on `f` it
+gives more weight to posterior variance (a candidate that *might* be far ahead
+counts for more than its mean alone says). `select` computes the same quantity on
+the posterior you send, which is why that posterior has to be normal-scale: on any
+other scale the `exp` is a different criterion.
 
 Each batch of `q` trials carries more information than `q` independently-drawn trials. You reach good solutions in fewer total evaluations — which matters when each evaluation is expensive (a training run, an experiment, a simulation).

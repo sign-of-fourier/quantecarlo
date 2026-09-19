@@ -20,7 +20,7 @@ Batch-search knobs (server-defaulted unless given):
     n_batches      how many batches survive that screen (default 512). Only
                    matters when n_prefilter * q > ei_direct_max -- with the
                    defaults that is q >= 5.
-    orthant_mode, order, gh_nodes, gh_nodes_corr
+    orthant_mode, order, gh_nodes, gh_nodes_corr, dup_corr
                    numerical-accuracy settings for the q-EI computation; leave
                    unset unless instructed
 Fields that only some paths use:
@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 # omitted, so a payload never carries a value the caller didn't set.
 _TUNING_FIELDS = frozenset({
     "n_prefilter", "ei_direct_max",
-    "orthant_mode", "order", "gh_nodes", "gh_nodes_corr",
+    "orthant_mode", "order", "gh_nodes", "gh_nodes_corr", "dup_corr",
 })
 
 

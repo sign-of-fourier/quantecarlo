@@ -83,7 +83,7 @@ class QEIClient:
                  they apply to; unknown names raise TypeError. suggest* take
                  n_prefilter, ei_direct_max; select takes ei_budget,
                  mpi_bytes, pi_floor, seed; orthant_mode, order, gh_nodes,
-                 gh_nodes_corr go to both. See quantecarlo._modal_api and
+                 gh_nodes_corr, dup_corr go to both. See quantecarlo._modal_api and
                  quantecarlo._select_api for what each one does.
     """
 
@@ -140,14 +140,21 @@ class QEIClient:
         mu:      posterior mean at each candidate, shape (n,). Higher = better.
         cov:     posterior covariance over the candidates, shape (n, n).
         best_y:  the incumbent, on mu's scale. Your rule; the service only
-                 compares mu against it.
+                 compares mu against it.  Scale: improvement is computed on
+                 exp of the posterior (q-EI on a lognormal objective, as
+                 suggest() does after rank-normalising y), so mu, cov and
+                 best_y must be normal-scale -- rank-normal, PIT, or the log
+                 of a lognormal target.  `quantecarlo.rank_normal` is the
+                 transform suggest() uses.  |best_y| > 5 is answered with a
+                 warning (logged, and in the returned "warnings").
         q:       how many to pick.
         dtype:   overrides the client's dtype for this call.
         **tuning: per-call select fields (ei_budget, mpi_bytes, pi_floor,
                  seed, orthant_*); override the client-level ones.
 
         Returns a dict: "indices" (q ints into mu), "qei", "regime" ("exact"
-        | "screen" | "sample"), "n_cands", "n_sampled", "n_batches". Fewer
+        | "screen" | "sample"), "n_cands", "n_sampled", "n_batches",
+        "warnings" (list of str or None). Fewer
         than q indices only when mu has fewer than q entries. In debug mode
         `self.last_diagnostics` is filled as for suggest().
         """

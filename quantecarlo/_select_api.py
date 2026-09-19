@@ -2,10 +2,17 @@
 
 You fitted your own surrogate; the service only picks the batch. Send the
 posterior mean over your candidates, its covariance, and the incumbent, and
-get back q indices chosen by joint q-EI. Nothing about your model, your
-observations, or how you scaled y leaves the machine -- only (mu, cov,
-best_y), which are scale-free as far as the service is concerned (it never
-compares them to anything of its own).
+get back q indices chosen by joint q-EI. Nothing about your model or your
+observations leaves the machine -- only (mu, cov, best_y).
+
+Scale is not free, though. The service computes improvement on exp of the
+posterior it is sent: E[(exp(max f) - exp(best_y))^+], with f your posterior.
+That is q-EI on a lognormal objective, and it is what `suggest` computes
+internally after rank-normalising y. So mu, cov and best_y must be on a
+normal scale (rank-normal, PIT, log of a lognormal target); fit on
+`quantecarlo.rank_normal(y)` if your surrogate does not already do this.
+A raw-scale best_y is not rejected, but |best_y| > 5 comes back (and is
+logged) as a warning in the response's "warnings" list.
 
 Wire format: an npz body (zip-compressed) carrying `mu` (n,), `cov_tril`
 (n(n+1)/2,) -- the row-major lower triangle of cov, diagonal included -- and
@@ -38,6 +45,10 @@ Batch-search knobs (server-defaulted unless given; all optional):
     seed          makes the sampling regime reproducible.
     orthant_mode, order, gh_nodes, gh_nodes_corr
                   numerical-accuracy settings; leave unset unless instructed.
+    dup_corr      candidates whose posterior correlation is >= 1 - dup_corr are
+                  treated as the same point inside a batch (default 0.01, i.e.
+                  corr >= 0.99). A singular covariance (exact duplicates) is
+                  valid input.
 
 The server chooses between three regimes from the pool size and q, and the
 response says which ran:
@@ -62,7 +73,7 @@ logger = logging.getLogger(__name__)
 
 _SELECT_TUNING_FIELDS = frozenset({
     "ei_budget", "mpi_bytes", "pi_floor", "seed",
-    "orthant_mode", "order", "gh_nodes", "gh_nodes_corr",
+    "orthant_mode", "order", "gh_nodes", "gh_nodes_corr", "dup_corr",
 })
 
 _DTYPES = {"float64": np.float64, "float32": np.float32}
@@ -114,7 +125,8 @@ def call_select_api(
     cov:      posterior covariance over the candidates, shape (n, n). Full
               matrix; the client packs the lower triangle.
     best_y:   the incumbent value, on the same scale as mu. Your rule (max
-              observed y, best posterior mean at the training inputs, ...).
+              observed y, best posterior mean at the training inputs, ...),
+              on the normal scale described in the module docstring.
     q:        how many candidates to pick.
     dtype:    "float64" (default) or "float32" -- see the module docstring.
     mode:     "debug" adds diagnostics to the response; pass a dict as
@@ -123,7 +135,7 @@ def call_select_api(
 
     Returns a dict: "indices" (list of q ints into mu), "qei" (the batch's
     joint q-EI), "regime" ("exact" | "screen" | "sample"), "n_cands",
-    "n_sampled", "n_batches".
+    "n_sampled", "n_batches", "warnings" (list of str, or None).
     """
     unknown = set(tuning) - _SELECT_TUNING_FIELDS
     if unknown:
@@ -162,4 +174,7 @@ def _parse_select(data: dict, diagnostics: dict | None = None) -> dict[str, Any]
         diagnostics.update({k: v for k, v in data.items() if k not in _RESULT_KEYS and v is not None})
     out = {k: data[k] for k in _RESULT_KEYS}
     out["indices"] = [int(i) for i in out["indices"]]
+    out["warnings"] = data.get("warnings") or None
+    for w in out["warnings"] or ():
+        logger.warning("call_select_api: %s", w)
     return out
