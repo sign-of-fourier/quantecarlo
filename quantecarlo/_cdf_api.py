@@ -31,10 +31,18 @@ back on a problem the method is weak on. Measure on your own inputs: take a
 random subsample of rows and compare against
 scipy.stats.multivariate_normal.cdf.
 
-Wire format: an npz body carrying `upper` (N, d), `cov_tril` (d(d+1)/2,) --
-the row-major lower triangle of cov, diagonal included -- optional `signs`,
-and the scalar fields as JSON under `params`. The response is an npz with
-`p` (N,).
+Wire format: an uncompressed npz body carrying `upper` (N, d), `cov_tril`
+(d(d+1)/2,) -- the row-major lower triangle of cov, diagonal included --
+optional `signs`, and the scalar fields as JSON under `params`. The response
+is an npz with `p` (N,). Uncompressed because the payload is upper, and
+floats barely compress: at N = 1M zip saves ~4% and costs seconds.
+
+dtype (default "float32"): the float width `upper` is sent in. At large N
+the upload is the whole cost of a call -- the service computes a million
+rows in about a second -- and float32 halves it. Rounding the limits to
+float32 moves p by ~1e-7, far below the method's own error. The covariance
+always travels in float64: it is small, and a near-singular one is where
+rounding would matter. The service computes in float64 either way.
 """
 from __future__ import annotations
 
@@ -53,7 +61,7 @@ _RESOLUTIONS = ("high", "low")
 
 
 def build_cdf_body(upper, cov, signs=None, resolution: str = "high",
-                   dtype: str = "float64") -> bytes:
+                   dtype: str = "float32") -> bytes:
     """The npz body orthant_cdf posts. Exposed for tests and for callers that
     want to inspect or store what would be sent."""
     if dtype not in _DTYPES:
@@ -65,7 +73,7 @@ def build_cdf_body(upper, cov, signs=None, resolution: str = "high",
     if upper.ndim != 2:
         raise ValueError(f"upper must be (N, d) or (d,); got shape {upper.shape}")
     d = upper.shape[1]
-    tril = pack_tril(cov, np_dtype)
+    tril = pack_tril(cov, np.float64)
     if tril.shape[0] != d * (d + 1) // 2:
         raise ValueError(f"upper has d={d} columns but cov is {np.asarray(cov).shape}")
     arrays = {"upper": upper, "cov_tril": tril,
@@ -76,7 +84,7 @@ def build_cdf_body(upper, cov, signs=None, resolution: str = "high",
             raise ValueError(f"signs must be {d} entries of +1/-1")
         arrays["signs"] = signs
     buf = io.BytesIO()
-    np.savez_compressed(buf, **arrays)
+    np.savez(buf, **arrays)
     return buf.getvalue()
 
 
@@ -87,7 +95,7 @@ def orthant_cdf(
     signs=None,
     resolution: str = "high",
     api_url: str = DEFAULT_CDF_URL,
-    dtype: str = "float64",
+    dtype: str = "float32",
     timeout: float = 300.0,
 ) -> np.ndarray:
     """P(Z <= upper[i]) for each row i, Z ~ N(0, cov); see the module docstring.
@@ -98,8 +106,8 @@ def orthant_cdf(
                 standardises. Singular (PSD) matrices are accepted.
     signs:      optional (d,) of +1/-1 -- a fixed "below"/"above" pattern.
     resolution: "high" (default) or "low".
-    dtype:      "float64" (default) or "float32" for the wire; halves the
-                upload of a large N.
+    dtype:      "float32" (default) or "float64": the wire width of upper
+                only; see the module docstring.
 
     Returns p, a float64 array of shape (N,).
     """

@@ -468,7 +468,7 @@ endpoint (`DEFAULT_SELECT_URL`).
 
 ```python
 orthant_cdf(upper, cov, *, signs=None, resolution="high", api_url=DEFAULT_CDF_URL,
-            dtype="float64", timeout=300.0) -> np.ndarray
+            dtype="float32", timeout=300.0) -> np.ndarray
 ```
 
 Many multivariate normal CDFs that share one covariance:
@@ -482,7 +482,7 @@ q-EI service above: no candidates, no GP, just the integrals.
 | `cov`        | Covariance shared by every row, shape `(d, d)`. Usually a correlation matrix; any positive diagonal works. Singular (PSD) matrices are accepted. |
 | `signs`      | Optional `(d,)` of `+1`/`-1`: the event becomes `s_j Z_j <= s_j upper[i, j]`, i.e. a fixed mix of "below" (`+1`) and "above" (`-1`) constraints, the same for every row. |
 | `resolution` | `"high"` (default) or `"low"` — coarser and faster; the gap is small for 2–4 variables and grows with `d`. |
-| `dtype`      | Wire width of `upper`: `"float64"` (default) or `"float32"`, which halves the upload for a large `N`. |
+| `dtype`      | Wire width of `upper`: `"float32"` (default) or `"float64"`. The covariance is always sent in float64 and the service computes in float64. |
 
 Returns `p`, a float64 array of shape `(N,)`.
 
@@ -499,6 +499,12 @@ p_y    = orthant_cdf(eta, R, signs=2 * y - 1)   # P(Y = y) for one pattern y
 
 A pattern that varies by row — the observed `y` of each test row, for a log score — is
 one call per distinct pattern, with the rows grouped by pattern.
+
+**Speed.** At large `N` a call costs its upload, not its compute: the service scores a
+million rows at `d = 20` in about a second, and the rest is moving `upper` over the
+network. That is why `upper` goes out uncompressed (floats barely compress) and in
+float32 by default (a ~1e-7 change in `p`, far below the method's error). Expect the
+first call after an idle period to take several seconds longer while a worker starts.
 
 **Accuracy.** The result is approximate and clipped to `[0, 1]`; a value of exactly
 `0.0` or `1.0` means the error is large there, which matters for a log score. Accuracy
