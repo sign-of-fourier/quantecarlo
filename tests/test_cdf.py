@@ -51,9 +51,10 @@ def test_posts_npz_and_returns_p():
 def test_single_row_and_no_signs():
     fake, cap = _mock_urlopen([0.5])
     with patch("quantecarlo._cdf_api.urllib.request.urlopen", fake):
-        orthant_cdf([0.0, 0.0, 0.0], R, dtype="float32")
+        orthant_cdf([0.0, 0.0, 0.0], R)
     assert cap["body"]["upper"].shape == (1, 3)
-    assert cap["body"]["upper"].dtype == np.float32
+    assert cap["body"]["upper"].dtype == np.float32      # the default
+    assert cap["body"]["cov_tril"].dtype == np.float64   # always
     assert "signs" not in cap["body"]
 
 
@@ -68,3 +69,12 @@ def test_rejects_bad_input(kwargs):
     args = {"upper": np.zeros((2, 3)), "cov": R, **kwargs}
     with pytest.raises(ValueError):
         build_cdf_body(**args)
+
+
+def test_float64_on_request_and_body_is_uncompressed():
+    import zipfile
+    body = build_cdf_body(np.zeros((2, 3)), R, dtype="float64")
+    with zipfile.ZipFile(io.BytesIO(body)) as zf:
+        assert all(i.compress_type == zipfile.ZIP_STORED for i in zf.infolist())
+    with np.load(io.BytesIO(body)) as npz:
+        assert npz["upper"].dtype == np.float64
