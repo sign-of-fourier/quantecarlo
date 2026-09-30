@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 dist/
 *.egg-info/
+CLAUDE.md
+TECH_DEBT.md
+.claude/

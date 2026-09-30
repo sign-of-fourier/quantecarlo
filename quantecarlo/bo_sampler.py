@@ -8,6 +8,8 @@ import numpy as np
 
 from quantecarlo._modal_api import call_modal_api
 
+DEFAULT_API_URL = "https://info-29741--bo-gp-service-gp-suggest.modal.run"
+
 
 @dataclass
 class DimSpec:
@@ -27,7 +29,7 @@ def modal_suggest(
     q: int,
     *,
     direction: str = "minimize",
-    api_url: str = "https://markshipman4273--bo-gp-service-gp-suggest.modal.run",
+    api_url: str = DEFAULT_API_URL,
     n_probe_points: int = 512,
     n_candidate_batches: int | None = None,
     train_steps: int = 60,
@@ -63,18 +65,22 @@ def modal_suggest(
                             the GP can choose from. Meaningless once you're passing
                             call_modal_api real points directly — there is nothing
                             to invent when the real, finite set is already known.
-      n_candidate_batches — how many random size-q index-combinations of that pool
-                            the server scores with joint q-EI before returning the
-                            best one (see GPRequest.n_batches in modal_gp_api.py;
-                            same knob, renamed here to not collide with "batch"
-                            meaning a q-sized round of picks elsewhere in a caller's
-                            ask-tell loop). Defaults to n_probe_points for backward
-                            compatibility with callers that only ever set one knob;
-                            pass both explicitly to decouple them.
+      n_candidate_batches — the wire field n_batches (renamed here so "batch"
+                            doesn't also mean a q-sized round of picks in a
+                            caller's ask-tell loop): how many size-q batches survive
+                            the server's screening pass and are scored by joint
+                            q-EI. The screen only runs when n_prefilter * q >
+                            ei_direct_max (q >= 5 with the server defaults); below
+                            that every drawn batch is scored and this is ignored.
+                            The width of the search is n_prefilter, not this.
+                            Defaults to n_probe_points for backward compatibility
+                            with callers that only ever set one knob.
 
-    Any further keyword arguments (n_prefilter, ei_direct_max, orthant_mode,
-    order, gh_nodes, gh_nodes_corr) are server-side tuning fields forwarded
-    verbatim by call_modal_api; see quantecarlo._modal_api.
+    train_steps / lr are the server-side GP fitting budget and step size. xi is
+    accepted for compatibility and ignored by the service.
+
+    Any further keyword arguments are server-side tuning fields forwarded
+    verbatim by call_modal_api; see quantecarlo._modal_api for the accepted set.
 
     Bind extra parameters with functools.partial before passing to BatchSampler:
 
@@ -85,7 +91,7 @@ def modal_suggest(
         sampler = BatchSampler(search_space=dims, suggest_fn=suggest, q=4)
     """
     rng = np.random.default_rng(seed)
-    candidates = np.array(_sample_candidates(search_space, n_probe_points, rng), dtype=np.float32)
+    candidates = sample_candidates(search_space, n_probe_points, rng)
     # Modal API is higher-is-better; negate y for minimize studies.
     y_send = np.array([-v for v in y] if direction == "minimize" else list(y), dtype=np.float32)
     X_arr = np.array(X, dtype=np.float32)
@@ -107,6 +113,19 @@ def modal_suggest(
             params[dim.name] = val
         results.append(params)
     return results
+
+
+def sample_candidates(
+    dims: list[DimSpec], n: int, seed: int | np.random.Generator | None = None
+) -> np.ndarray:
+    """Invent n random points inside the bounds of `dims`, shape (n, len(dims)).
+
+    For continuous search spaces with no enumerable pool: the result is a
+    candidate pool you can hand to QEIClient.suggest. Log dims sample
+    log-uniformly; int dims sample integers.
+    """
+    rng = seed if isinstance(seed, np.random.Generator) else np.random.default_rng(seed)
+    return np.array(_sample_candidates(dims, n, rng), dtype=np.float32)
 
 
 def _sample_candidates(

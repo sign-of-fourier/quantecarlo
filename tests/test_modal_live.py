@@ -15,7 +15,7 @@ from quantecarlo import DimSpec, modal_suggest
 
 MODAL_API_URL = os.environ.get(
     "MODAL_BO_API_URL",
-    "https://markshipman4273--bo-gp-service-gp-suggest.modal.run",
+    "https://info-29741--bo-gp-service-gp-suggest.modal.run",
 )
 
 SEARCH_SPACE = [
