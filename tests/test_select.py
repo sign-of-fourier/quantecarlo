@@ -67,7 +67,7 @@ def test_call_select_api_posts_octet_stream_and_parses():
     with patch("quantecarlo._select_api.urllib.request.urlopen", fake):
         out = call_select_api("http://x", mu, cov, best_y=0.5, q=2, seed=3, timeout=7,
                               mode="debug", diagnostics=diag)
-    assert out == RESULT
+    assert out == {**RESULT, "warnings": None}
     assert cap["headers"][0]["Content-type"] == "application/octet-stream"
     assert cap["timeout"] == 7
     body = cap["bodies"][0]
@@ -84,7 +84,7 @@ def test_debug_keys_land_in_diagnostics():
     diag = {}
     with patch("quantecarlo._select_api.urllib.request.urlopen", fake):
         out = call_select_api("http://x", mu, cov, 0.0, q=2, diagnostics=diag)
-    assert out == RESULT
+    assert out == {**RESULT, "warnings": None}
     assert diag == {"ei_all": [0.1, 0.3], "timing_s": {"total": 0.2}}
 
 
@@ -147,3 +147,31 @@ class TestClient:
         with patch("quantecarlo._select_api.urllib.request.urlopen", fake):
             QEIClient().select(mu, cov, 0.0, q=2, dtype="float32")
         assert cap["bodies"][0]["mu"].dtype == np.float32
+
+
+def test_server_warnings_are_relayed(caplog):
+    mu, cov = _posterior()
+    fake, _ = _mock_urlopen({**RESULT, "warnings": ["best_y=250 is outside [-5, 5]; ..."]})
+    with patch("quantecarlo._select_api.urllib.request.urlopen", fake):
+        with caplog.at_level(logging.WARNING, logger="quantecarlo._select_api"):
+            out = call_select_api("http://x", mu, cov, 250.0, q=2)
+    assert out["warnings"] == ["best_y=250 is outside [-5, 5]; ..."]
+    assert any("best_y=250" in r.message for r in caplog.records)
+    fake, _ = _mock_urlopen()   # no key at all -> None, nothing logged
+    with patch("quantecarlo._select_api.urllib.request.urlopen", fake):
+        assert call_select_api("http://x", mu, cov, 0.0, q=2)["warnings"] is None
+
+
+def test_rank_normal_matches_service_transform():
+    from scipy.stats import norm
+    from quantecarlo import rank_normal
+    y = np.array([3.0, -1.0, 10.0, 2.5, 2.5])
+    f = rank_normal(y)
+    # the service's _transform_y, verbatim
+    ranks = np.argsort(np.argsort(y)).astype(np.float64)
+    u = (ranks + 1.0) / (len(y) + 1.0)
+    u = u * 0.9999 + 0.00005
+    np.testing.assert_allclose(f, norm.ppf(u))
+    assert f.dtype == np.float64 and np.argmax(f) == 2 and np.argmin(f) == 1
+    assert np.all(np.abs(rank_normal(np.arange(10_000))) < 4.0)
+    assert rank_normal([]).size == 0

@@ -2,12 +2,15 @@ from quantecarlo.bo_sampler import DimSpec, modal_suggest, sample_candidates
 from quantecarlo.qei import QEIClient, DEFAULT_API_URL, DEFAULT_SELECT_URL
 from quantecarlo._modal_api import call_modal_api, call_modal_api_multioutput, call_modal_api_composite
 from quantecarlo._select_api import call_select_api
+from quantecarlo._cdf_api import orthant_cdf, DEFAULT_CDF_URL
 from quantecarlo._fantasize import fantasize_suggest
+from quantecarlo.transform import rank_normal
 
 __all__ = [
     "QEIClient",
     "DEFAULT_API_URL",
     "DEFAULT_SELECT_URL",
+    "DEFAULT_CDF_URL",
     "sample_candidates",
     "DimSpec",
     "modal_suggest",
@@ -16,4 +19,6 @@ __all__ = [
     "call_modal_api_multioutput",
     "call_modal_api_composite",
     "call_select_api",
+    "rank_normal",
+    "orthant_cdf",
 ]

@@ -7,6 +7,7 @@ service. Use it two ways:
 |---|---|
 | [`QEIClient`](#direct-q-ei-no-optuna) | You run your own ask-tell loop. No Optuna required. |
 | [`modal_suggest` / `fantasize_suggest`](#with-optuna-batchsampler) | You use Optuna via the optunahub [`BatchSampler`](https://hub.optuna.org/samplers/batch_sampler/). |
+| [`orthant_cdf`](#orthant-probabilities-orthant_cdf) | Not optimization: many multivariate normal CDFs under one covariance, e.g. scoring a multivariate probit on a test set. |
 
 Both call the same service with the same contract. Each request sends your evaluated
 points, their scores, and a candidate pool; the service fits a GP and returns the `q`
@@ -462,6 +463,49 @@ call_select_api(api_url, mu, cov, best_y, q=2, *, dtype="float64", mode="product
 
 The plain-function form of `QEIClient.select`; `api_url` here is the acquisition-only
 endpoint (`DEFAULT_SELECT_URL`).
+
+## Orthant probabilities (`orthant_cdf`)
+
+```python
+orthant_cdf(upper, cov, *, signs=None, resolution="high", api_url=DEFAULT_CDF_URL,
+            dtype="float64", timeout=300.0) -> np.ndarray
+```
+
+Many multivariate normal CDFs that share one covariance:
+`p[i] = P(Z_1 <= upper[i, 1], ..., Z_d <= upper[i, d])`, `Z ~ N(0, cov)`. The
+covariance is sent once; only the rows of `upper` grow with `N`. Separate from the
+q-EI service above: no candidates, no GP, just the integrals.
+
+| Argument     | Description |
+|--------------|-------------|
+| `upper`      | Upper limits, shape `(N, d)`, one problem per row (or `(d,)` for one). |
+| `cov`        | Covariance shared by every row, shape `(d, d)`. Usually a correlation matrix; any positive diagonal works. Singular (PSD) matrices are accepted. |
+| `signs`      | Optional `(d,)` of `+1`/`-1`: the event becomes `s_j Z_j <= s_j upper[i, j]`, i.e. a fixed mix of "below" (`+1`) and "above" (`-1`) constraints, the same for every row. |
+| `resolution` | `"high"` (default) or `"low"` — coarser and faster; the gap is small for 2–4 variables and grows with `d`. |
+| `dtype`      | Wire width of `upper`: `"float64"` (default) or `"float32"`, which halves the upload for a large `N`. |
+
+Returns `p`, a float64 array of shape `(N,)`.
+
+**Multivariate probit.** With latent index `eta` of shape `(N, d)`, fitted correlation
+`R`, and `Y_j = 1` iff `Z_j <= eta_j`:
+
+```python
+from quantecarlo import orthant_cdf
+
+p_all  = orthant_cdf(eta, R)                    # P(every Y_j = 1)
+p_none = orthant_cdf(-eta, R)                   # P(every Y_j = 0); P(any) = 1 - p_none
+p_y    = orthant_cdf(eta, R, signs=2 * y - 1)   # P(Y = y) for one pattern y
+```
+
+A pattern that varies by row — the observed `y` of each test row, for a log score — is
+one call per distinct pattern, with the rows grouped by pattern.
+
+**Accuracy.** The result is approximate and clipped to `[0, 1]`; a value of exactly
+`0.0` or `1.0` means the error is large there, which matters for a log score. Accuracy
+depends on the covariance and the limits, and no argument buys it back on a problem the
+method is weak on. Check on your own inputs: take a random subsample of rows and compare
+against `scipy.stats.multivariate_normal.cdf`, which is exact enough to judge by but far
+too slow to run on all of them at large `d` and `N`.
 
 ---
 
