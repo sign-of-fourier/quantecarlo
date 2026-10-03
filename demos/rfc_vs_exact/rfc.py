@@ -371,3 +371,43 @@ def random_lines(n_lines, n_products, m, rng):
     idx = np.sort(rng.integers(0, n_products, (int(n_lines * 1.05) + 100, m)), axis=1)
     ok = np.all(np.diff(idx, axis=1) > 0, axis=1)
     return np.unique(idx[ok], axis=0)[:n_lines]
+
+
+# ---------------------------------------------------------------------------
+# orthant_cdf accuracy test (orthant_accuracy.ipynb)
+# ---------------------------------------------------------------------------
+def _cdf_one(args):
+    u, c, tol, maxpts = args
+    return multivariate_normal.cdf(u, mean=np.zeros(len(u)), cov=c, abseps=tol, releps=tol, maxpts=maxpts)
+
+
+def scipy_orthants(up, cov, tol=1e-7, maxpts=4 * 10 ** 7, processes=2):
+    """P(Z <= up[i]), Z ~ N(0, cov[i]) by SciPy, in parallel. cov (N, d, d)."""
+    from multiprocessing import Pool
+    with Pool(processes) as pool:
+        return np.array(pool.map(_cdf_one, [(u, c, tol, maxpts) for u, c in zip(up, cov)], chunksize=16))
+
+
+def max_diff_corr(cov):
+    """Largest off-diagonal correlation of each (d, d) covariance in cov (..., d, d)."""
+    sd = np.sqrt(np.diagonal(cov, axis1=-2, axis2=-1))
+    r = cov / (sd[..., :, None] * sd[..., None, :])
+    d = r.shape[-1]
+    return np.where(np.eye(d, dtype=bool), -np.inf, r).max(axis=(-2, -1))
+
+
+def scenario_max_corr(X1, sigma_p=SIGMA_P):
+    """Max correlation over the K difference covariances of one design X1 (K, P)."""
+    V, S = utility_moments(X1[None], sigma_p=sigma_p)
+    _, cov = orthant_problems(V, S)
+    return max_diff_corr(cov).max()
+
+
+def sigma_p_for_corr(X1, target):
+    """sigma_P giving scenario_max_corr(X1) == target, or None if out of reach."""
+    from scipy.optimize import brentq
+    f = lambda ls: scenario_max_corr(X1, np.exp(ls)) - target
+    lo, hi = np.log(1e-4), np.log(1e3)
+    if f(lo) * f(hi) > 0:
+        return None
+    return float(np.exp(brentq(f, lo, hi, xtol=1e-10)))
