@@ -21,6 +21,12 @@ Z_j <= eta_j:
 A query whose pattern varies by row (the observed y of each test row, for a
 log score) is one call per distinct pattern, rows grouped by pattern.
 
+cov may instead be (N, d, d), one covariance per row, when the rows are not
+draws from one fitted model: e.g. choice probabilities across many choice
+sets, where each set's utility-difference covariance depends on its design.
+Every row's matrix then travels (in float64), so the upload grows with
+N * d^2 rather than N * d; send a shared (d, d) whenever the rows have one.
+
 resolution: "high" (default) or "low". "low" is coarser and faster; the gap
     is small for 2-4 variables and grows with dimension.
 
@@ -32,7 +38,8 @@ random subsample of rows and compare against
 scipy.stats.multivariate_normal.cdf.
 
 Wire format: an uncompressed npz body carrying `upper` (N, d), `cov_tril`
-(d(d+1)/2,) -- the row-major lower triangle of cov, diagonal included --
+(d(d+1)/2,) -- the row-major lower triangle of cov, diagonal included; or
+(N, d(d+1)/2) for a per-row cov --
 optional `signs`, and the scalar fields as JSON under `params`. The response
 is an npz with `p` (N,). Uncompressed because the payload is upper, and
 floats barely compress: at N = 1M zip saves ~4% and costs seconds.
@@ -72,10 +79,17 @@ def build_cdf_body(upper, cov, signs=None, resolution: str = "high",
     upper = np.ascontiguousarray(np.atleast_2d(np.asarray(upper)), dtype=np_dtype)
     if upper.ndim != 2:
         raise ValueError(f"upper must be (N, d) or (d,); got shape {upper.shape}")
-    d = upper.shape[1]
-    tril = pack_tril(cov, np.float64)
-    if tril.shape[0] != d * (d + 1) // 2:
-        raise ValueError(f"upper has d={d} columns but cov is {np.asarray(cov).shape}")
+    N, d = upper.shape
+    cov = np.asarray(cov)
+    if cov.ndim == 3:
+        if cov.shape != (N, d, d):
+            raise ValueError(f"per-row cov must be ({N}, {d}, {d}) to match upper; got {cov.shape}")
+        i, j = np.tril_indices(d)
+        tril = np.ascontiguousarray(cov[:, i, j], dtype=np.float64)
+    else:
+        tril = pack_tril(cov, np.float64)
+        if tril.shape[0] != d * (d + 1) // 2:
+            raise ValueError(f"upper has d={d} columns but cov is {cov.shape}")
     arrays = {"upper": upper, "cov_tril": tril,
               "params": json.dumps({"resolution": resolution})}
     if signs is not None:
@@ -101,9 +115,10 @@ def orthant_cdf(
     """P(Z <= upper[i]) for each row i, Z ~ N(0, cov); see the module docstring.
 
     upper:      (N, d) upper limits, one problem per row, or (d,) for one.
-    cov:        (d, d) covariance shared by every row. A correlation matrix
-                is the usual case; any positive diagonal works, the service
-                standardises. Singular (PSD) matrices are accepted.
+    cov:        (d, d) covariance shared by every row, or (N, d, d) one per
+                row. A correlation matrix is the usual case; any positive
+                diagonal works, the service standardises. Singular (PSD)
+                matrices are accepted.
     signs:      optional (d,) of +1/-1 -- a fixed "below"/"above" pattern.
     resolution: "high" (default) or "low".
     dtype:      "float32" (default) or "float64": the wire width of upper

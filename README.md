@@ -486,7 +486,7 @@ q-EI service above: no candidates, no GP, just the integrals.
 | Argument     | Description |
 |--------------|-------------|
 | `upper`      | Upper limits, shape `(N, d)`, one problem per row (or `(d,)` for one). |
-| `cov`        | Covariance shared by every row, shape `(d, d)`. Usually a correlation matrix; any positive diagonal works. Singular (PSD) matrices are accepted. |
+| `cov`        | Covariance shared by every row, shape `(d, d)`, or one per row, shape `(N, d, d)`. Usually a correlation matrix; any positive diagonal works. Singular (PSD) matrices are accepted. |
 | `signs`      | Optional `(d,)` of `+1`/`-1`: the event becomes `s_j Z_j <= s_j upper[i, j]`, i.e. a fixed mix of "below" (`+1`) and "above" (`-1`) constraints, the same for every row. |
 | `resolution` | `"high"` (default) or `"low"` — coarser and faster; the gap is small for 2–4 variables and grows with `d`. |
 | `dtype`      | Wire width of `upper`: `"float32"` (default) or `"float64"`. The covariance is always sent in float64 and the service computes in float64. |
@@ -506,6 +506,11 @@ p_y    = orthant_cdf(eta, R, signs=2 * y - 1)   # P(Y = y) for one pattern y
 
 A pattern that varies by row — the observed `y` of each test row, for a log score — is
 one call per distinct pattern, with the rows grouped by pattern.
+
+**Per-row covariance.** When the rows don't come from one fitted matrix — choice
+probabilities across many choice sets, where each set's covariance depends on its
+design — pass `cov` as `(N, d, d)`. Every matrix is sent in float64, so the upload grows
+with `N·d²` instead of `N·d`; use a shared `(d, d)` whenever the rows have one.
 
 **Speed.** At large `N` a call costs its upload, not its compute: the service scores a
 million rows at `d = 20` in about a second, and the rest is moving `upper` over the
