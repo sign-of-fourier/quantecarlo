@@ -411,3 +411,49 @@ def sigma_p_for_corr(X1, target):
     if f(lo) * f(hi) > 0:
         return None
     return float(np.exp(brentq(f, lo, hi, xtol=1e-10)))
+
+
+# ---------------------------------------------------------------------------
+# Fair product-line search (product_line_fair.ipynb)
+# ---------------------------------------------------------------------------
+def line_sets(X_line, X_comp):
+    return np.concatenate([X_line, np.broadcast_to(X_comp, (len(X_line),) + X_comp.shape)], axis=1)
+
+
+def line_profit_orthant_renorm(X_line, X_comp, chunk=50_000):
+    """Profit with renormalized orthant_cdf shares: all K shares per line are
+    computed and divided by their sum. Also returns each line's largest
+    difference-covariance correlation (for the >= 0.9 flag)."""
+    L, m, _ = X_line.shape
+    k_alts = m + len(X_comp)
+    shares, corr = np.empty((L, m)), np.empty(L)
+    for a in range(0, L, chunk):
+        b = min(a + chunk, L)
+        up, cov = line_problems(line_sets(X_line[a:b], X_comp), k_alts)
+        p = orthant_cdf(up, cov).reshape(b - a, k_alts)
+        shares[a:b] = (p / p.sum(axis=1, keepdims=True))[:, :m]
+        corr[a:b] = max_diff_corr(cov).reshape(b - a, k_alts).max(axis=1)
+    return (shares * dollars(X_line)).sum(axis=1), shares, corr
+
+
+def line_profit_rfc_crn(X_line, X_comp, R, rng, sd_a=SD_A, sigma_p=SIGMA_P, budget=2 * 10 ** 7):
+    """RFC variant a with common random numbers: one set of R draws (E_A, E_P)
+    used for every line. Vectorized over lines in chunks of ~budget utilities."""
+    L, m, _ = X_line.shape
+    Xc = X_comp
+    k_alts = m + len(Xc)
+    za = rng.standard_normal((R, P)) * sd_a                   # (R, P)
+    ep = sigma_p * rng.standard_normal((R, k_alts))           # (R, K)
+    comp_u = Xc @ BETA + za @ Xc.T + ep[:, m:]                # (R, c): competitors are the same in every line
+    comp_best = comp_u.max(axis=1)                            # (R,)
+    shares = np.empty((L, m))
+    chunk = max(1, budget // (R * m))
+    for a in range(0, L, chunk):
+        b = min(a + chunk, L)
+        Xl = X_line[a:b]                                      # (l, m, P)
+        U = (Xl @ BETA)[:, :, None] + (Xl.reshape(-1, P) @ za.T).reshape(b - a, m, R) + ep[:, :m].T[None]
+        best = U.argmax(axis=1)                               # (l, R) which line product is best
+        win = U.max(axis=1) > comp_best[None]                 # (l, R) line beats every competitor
+        for j in range(m):
+            shares[a:b, j] = ((best == j) & win).mean(axis=1)
+    return (shares * dollars(X_line)).sum(axis=1), shares

@@ -1,0 +1,73 @@
+{
+ "R_min": null,
+ "t_rfc": null,
+ "t_orth": 41.124878100003116,
+ "n_lines": 1000000,
+ "verdict": "no R up to 10,000 picks the same best line with top-10 overlap >= 9; orthant_cdf took 41 s",
+ "table": [
+  {
+   "R": 100,
+   "seconds": 5.125546232,
+   "same_best": false,
+   "top10_overlap": 0,
+   "top100_overlap": 5,
+   "spearman_top1000": 0.2886880789,
+   "pick": [
+    74,
+    264,
+    634
+   ],
+   "pick_ref_rank": 25648,
+   "profit_gap": 0.3067704679,
+   "pick_flagged": false
+  },
+  {
+   "R": 1000,
+   "seconds": 46.241616604,
+   "same_best": true,
+   "top10_overlap": 5,
+   "top100_overlap": 67,
+   "spearman_top1000": 0.6339922233,
+   "pick": [
+    279,
+    454,
+    459
+   ],
+   "pick_ref_rank": 1,
+   "profit_gap": 0.0,
+   "pick_flagged": true
+  },
+  {
+   "R": 10000,
+   "seconds": 435.59739625,
+   "same_best": true,
+   "top10_overlap": 8,
+   "top100_overlap": 84,
+   "spearman_top1000": 0.8217581471,
+   "pick": [
+    279,
+    454,
+    459
+   ],
+   "pick_ref_rank": 1,
+   "profit_gap": 0.0,
+   "pick_flagged": true
+  },
+  {
+   "R": "orthant_cdf (reference)",
+   "seconds": 41.1248781,
+   "same_best": true,
+   "top10_overlap": 10,
+   "top100_overlap": 100,
+   "spearman_top1000": 1.0,
+   "pick": [
+    279,
+    454,
+    459
+   ],
+   "pick_ref_rank": 1,
+   "profit_gap": 0.0,
+   "pick_flagged": true
+  }
+ ]
+}
