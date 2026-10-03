@@ -7,7 +7,7 @@ service. Use it two ways:
 |---|---|
 | [`QEIClient`](#direct-q-ei-no-optuna) | You run your own ask-tell loop. No Optuna required. |
 | [`modal_suggest` / `fantasize_suggest`](#with-optuna-batchsampler) | You use Optuna via the optunahub [`BatchSampler`](https://hub.optuna.org/samplers/batch_sampler/). |
-| [`orthant_cdf`](#orthant-probabilities-orthant_cdf) | Not optimization: many multivariate normal CDFs under one covariance, e.g. scoring a multivariate probit on a test set. |
+| [`orthant_cdf`](#orthant-probabilities-orthant_cdf) | Not optimization: many multivariate normal CDFs under one covariance, e.g. scoring a [multivariate probit](https://quantecarlo.com/multivariate-probit) on a test set. About a million rows a second. |
 
 Both call the same service with the same contract. Each request sends your evaluated
 points, their scores, and a candidate pool; the service fits a GP and returns the `q`
@@ -470,6 +470,13 @@ endpoint (`DEFAULT_SELECT_URL`).
 orthant_cdf(upper, cov, *, signs=None, resolution="high", api_url=DEFAULT_CDF_URL,
             dtype="float32", timeout=300.0) -> np.ndarray
 ```
+
+**Speed, with a small accuracy trade-off.** About a second per million rows at
+`d = 20`, against 3e-3 to 2 s per row for SciPy. The price is a median error of up to
+about 0.007 on a probability, roughly 100-draw GHK accuracy
+([measurements](https://github.com/sign-of-fourier/multivariate-probit/blob/main/docs/studies/ghk.md)).
+For fitting and querying the model itself, see
+[multivariate-probit](https://quantecarlo.com/multivariate-probit).
 
 Many multivariate normal CDFs that share one covariance:
 `p[i] = P(Z_1 <= upper[i, 1], ..., Z_d <= upper[i, d])`, `Z ~ N(0, cov)`. The
