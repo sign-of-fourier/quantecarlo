@@ -30,6 +30,12 @@ N * d^2 rather than N * d; send a shared (d, d) whenever the rows have one.
 resolution: "high" (default) or "low". "low" is coarser and faster; the gap
     is small for 2-4 variables and grows with dimension.
 
+dup_corr: variables whose correlation is >= 1 - dup_corr are merged into one
+    before integrating (keeping the tighter limit). Near-perfect correlation
+    is where the approximation is weakest, and merging is exact at 1. None
+    (default) uses the service's value, 0.03 (merge at 0.97); 0 merges only
+    exact duplicates. Accepted range [0, 0.5].
+
 Approximate, not exact. Results are clipped to [0, 1]; a value of exactly
 0.0 or 1.0 means the error is large there, which matters for a log score.
 Accuracy depends on the covariance and the limits, and no argument buys it
@@ -68,7 +74,7 @@ _RESOLUTIONS = ("high", "low")
 
 
 def build_cdf_body(upper, cov, signs=None, resolution: str = "high",
-                   dtype: str = "float32") -> bytes:
+                   dtype: str = "float32", dup_corr: float | None = None) -> bytes:
     """The npz body orthant_cdf posts. Exposed for tests and for callers that
     want to inspect or store what would be sent."""
     if dtype not in _DTYPES:
@@ -90,8 +96,10 @@ def build_cdf_body(upper, cov, signs=None, resolution: str = "high",
         tril = pack_tril(cov, np.float64)
         if tril.shape[0] != d * (d + 1) // 2:
             raise ValueError(f"upper has d={d} columns but cov is {cov.shape}")
-    arrays = {"upper": upper, "cov_tril": tril,
-              "params": json.dumps({"resolution": resolution})}
+    params = {"resolution": resolution}
+    if dup_corr is not None:
+        params["dup_corr"] = float(dup_corr)
+    arrays = {"upper": upper, "cov_tril": tril, "params": json.dumps(params)}
     if signs is not None:
         signs = np.asarray(signs, dtype=np.float64).ravel()
         if signs.shape[0] != d or not np.all(np.abs(signs) == 1.0):
@@ -110,6 +118,7 @@ def orthant_cdf(
     resolution: str = "high",
     api_url: str = DEFAULT_CDF_URL,
     dtype: str = "float32",
+    dup_corr: float | None = None,
     timeout: float = 300.0,
 ) -> np.ndarray:
     """P(Z <= upper[i]) for each row i, Z ~ N(0, cov); see the module docstring.
@@ -123,10 +132,12 @@ def orthant_cdf(
     resolution: "high" (default) or "low".
     dtype:      "float32" (default) or "float64": the wire width of upper
                 only; see the module docstring.
+    dup_corr:   merge variables correlated >= 1 - dup_corr; None (default)
+                uses the service's 0.03. See the module docstring.
 
     Returns p, a float64 array of shape (N,).
     """
-    body = build_cdf_body(upper, cov, signs, resolution, dtype)
+    body = build_cdf_body(upper, cov, signs, resolution, dtype, dup_corr)
     req = urllib.request.Request(
         api_url, data=body,
         headers={"Content-Type": "application/octet-stream"},

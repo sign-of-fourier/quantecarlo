@@ -89,3 +89,11 @@ def test_per_row_cov_packs_each_matrix():
     np.testing.assert_array_equal(tril[1], (2 * R)[np.tril_indices(3)])
     with pytest.raises(ValueError):
         build_cdf_body(np.zeros((2, 3)), covs)
+
+
+def test_dup_corr_sent_only_when_set():
+    R = np.eye(3)
+    for kw, params in [({}, {"resolution": "high"}),
+                       ({"dup_corr": 0.01}, {"resolution": "high", "dup_corr": 0.01})]:
+        body = np.load(io.BytesIO(build_cdf_body(np.zeros((2, 3)), R, **kw)))
+        assert json.loads(str(body["params"])) == params

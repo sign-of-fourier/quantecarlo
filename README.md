@@ -468,7 +468,7 @@ endpoint (`DEFAULT_SELECT_URL`).
 
 ```python
 orthant_cdf(upper, cov, *, signs=None, resolution="high", api_url=DEFAULT_CDF_URL,
-            dtype="float32", timeout=300.0) -> np.ndarray
+            dtype="float32", dup_corr=None, timeout=300.0) -> np.ndarray
 ```
 
 **Speed, with a small accuracy trade-off.** About a second per million rows at
@@ -490,6 +490,7 @@ q-EI service above: no candidates, no GP, just the integrals.
 | `signs`      | Optional `(d,)` of `+1`/`-1`: the event becomes `s_j Z_j <= s_j upper[i, j]`, i.e. a fixed mix of "below" (`+1`) and "above" (`-1`) constraints, the same for every row. |
 | `resolution` | `"high"` (default) or `"low"` — coarser and faster; the gap is small for 2–4 variables and grows with `d`. |
 | `dtype`      | Wire width of `upper`: `"float32"` (default) or `"float64"`. The covariance is always sent in float64 and the service computes in float64. |
+| `dup_corr`   | Variables correlated `>= 1 - dup_corr` are merged into one before integrating (tighter limit kept). `None` (default) uses the service's `0.03`, i.e. merge at 0.97; `0` merges only exact duplicates; range `[0, 0.5]`. |
 
 Returns `p`, a float64 array of shape `(N,)`.
 
