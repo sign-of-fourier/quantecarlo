@@ -78,3 +78,22 @@ def test_float64_on_request_and_body_is_uncompressed():
         assert all(i.compress_type == zipfile.ZIP_STORED for i in zf.infolist())
     with np.load(io.BytesIO(body)) as npz:
         assert npz["upper"].dtype == np.float64
+
+
+def test_per_row_cov_packs_each_matrix():
+    covs = np.stack([R, 2 * R, np.eye(3)])
+    body = build_cdf_body(np.zeros((3, 3)), covs)
+    with np.load(io.BytesIO(body)) as npz:
+        tril = npz["cov_tril"]
+    assert tril.shape == (3, 6) and tril.dtype == np.float64
+    np.testing.assert_array_equal(tril[1], (2 * R)[np.tril_indices(3)])
+    with pytest.raises(ValueError):
+        build_cdf_body(np.zeros((2, 3)), covs)
+
+
+def test_dup_corr_sent_only_when_set():
+    R = np.eye(3)
+    for kw, params in [({}, {"resolution": "high"}),
+                       ({"dup_corr": 0.01}, {"resolution": "high", "dup_corr": 0.01})]:
+        body = np.load(io.BytesIO(build_cdf_body(np.zeros((2, 3)), R, **kw)))
+        assert json.loads(str(body["params"])) == params
